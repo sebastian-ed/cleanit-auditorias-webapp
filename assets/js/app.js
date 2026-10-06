@@ -52,10 +52,32 @@
     dateStyle: 'short', timeStyle: 'short'
   }).format(new Date(v)) : '—';
 
-  const pct = (v) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(1)}%` : '—';
+  const pct = (v) => (v === null || v === undefined || v === '') ? '—' : (Number.isFinite(Number(v)) ? `${Number(v).toFixed(1)}%` : '—');
 
   const roleLabel = role => role === 'admin' ? 'Administrador' : 'Auditor';
-  const statusLabel = status => status === 'completed' ? 'Completada' : 'Borrador';
+  const statusLabel = status => status === 'completed' ? 'Finalizada' : 'Borrador';
+  const auditCoverage = (audit, responses = null) => {
+    const storedTotal = Number(audit?.total_items);
+    const useResponses = Array.isArray(responses) && (audit?.status !== 'completed' || !Number.isFinite(storedTotal) || storedTotal <= 0);
+    const total = useResponses ? responses.length : (Number.isFinite(storedTotal) ? storedTotal : 0);
+    const storedAnswered = Number(audit?.answered_items);
+    const answered = useResponses
+      ? responses.filter(r => r.answer).length
+      : (Number.isFinite(storedAnswered) ? storedAnswered : 0);
+    const unansweredStored = Number(audit?.unanswered_items);
+    const unanswered = useResponses
+      ? Math.max(total - answered, 0)
+      : (Number.isFinite(unansweredStored) ? unansweredStored : Math.max(total - answered, 0));
+    const complete = audit?.is_complete === true || (total > 0 && unanswered === 0);
+    return { total, answered, unanswered, complete };
+  };
+  const coverageBadge = (audit, responses = null) => {
+    const c = auditCoverage(audit, responses);
+    if (audit?.status !== 'completed') return `<span class="badge badge-soft-neutral">En curso</span>`;
+    return c.complete
+      ? `<span class="badge badge-soft-success">Checklist completo · ${c.answered}/${c.total}</span>`
+      : `<span class="badge badge-soft-warning">Incompleta · ${c.unanswered} pendiente${c.unanswered === 1 ? '' : 's'}</span>`;
+  };
   const auditTypeLabel = type => type === 'local' ? 'Estado del local' : type === 'vehicle' ? 'Vehículo' : 'Histórica';
   const auditTypeBadgeClass = type => type === 'vehicle' ? 'badge-soft-warning' : type === 'local' ? 'badge-soft-success' : 'badge-soft-neutral';
   const auditIdentity = audit => audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'Sin patente') : audit.audit_type === 'local' ? 'Estado general del local' : (audit.vehicle_plate || 'Auditoría histórica');
@@ -314,13 +336,16 @@
     const type = el('dashboardTypeFilter')?.value || '';
     const audits = state.dashboardAudits.filter(a => !type || a.audit_type === type);
     const total = audits.length;
-    const avg = total ? audits.reduce((sum, x) => sum + Number(x.score || 0), 0) / total : 0;
+    const scored = audits.filter(x => x.score !== null && x.score !== undefined && x.score !== '');
+    const avg = scored.length ? scored.reduce((sum, x) => sum + Number(x.score), 0) / scored.length : null;
     const non = audits.filter(x => x.classification === 'No conforme').length;
     const critical = audits.reduce((sum, x) => sum + Number(x.critical_failures || 0), 0);
+    const incomplete = audits.filter(x => !auditCoverage(x).complete).length;
     el('kpiTotal').textContent = total;
-    el('kpiAverage').textContent = total ? pct(avg) : '—';
+    el('kpiAverage').textContent = avg === null ? '—' : pct(avg);
     el('kpiNonConform').textContent = non;
     el('kpiCritical').textContent = critical;
+    el('kpiIncomplete').textContent = incomplete;
     const base = state.profile.role === 'admin' ? 'Resultados consolidados de todos los auditores.' : 'Resultados de tus auditorías.';
     el('dashboardScope').textContent = `${base} ${type ? `Filtro: ${auditTypeLabel(type)}.` : 'Podés filtrar por tipo de auditoría.'}`;
 
@@ -332,7 +357,7 @@
   function renderRecentAudits(audits) {
     const body = el('recentAuditsBody');
     if (!audits.length) {
-      body.innerHTML = `<tr><td colspan="7"><div class="empty-state">Todavía no hay auditorías completadas para este filtro.</div></td></tr>`;
+      body.innerHTML = `<tr><td colspan="8"><div class="empty-state">Todavía no hay auditorías finalizadas para este filtro.</div></td></tr>`;
       return;
     }
     body.innerHTML = audits.map(a => `<tr>
@@ -341,7 +366,8 @@
       <td class="fw-semibold">${esc(auditIdentity(a))}</td>
       <td>${esc(a.auditor?.full_name || a.auditor?.email || '—')}</td>
       <td><strong>${pct(a.score)}</strong></td>
-      <td><span class="badge ${classificationClass(a.classification)}">${esc(a.classification)}</span></td>
+      <td><span class="badge ${classificationClass(a.classification)}">${esc(a.classification || 'Sin evaluación')}</span></td>
+      <td>${coverageBadge(a)}</td>
       <td class="text-end"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.openAudit('${a.id}')">Ver</button></td>
     </tr>`).join('');
   }
@@ -350,7 +376,8 @@
     const counts = {
       'Conforme': audits.filter(a => a.classification === 'Conforme').length,
       'Conforme con observaciones': audits.filter(a => a.classification === 'Conforme con observaciones').length,
-      'No conforme': audits.filter(a => a.classification === 'No conforme').length
+      'No conforme': audits.filter(a => a.classification === 'No conforme').length,
+      'Sin evaluación': audits.filter(a => !a.classification || a.classification === 'Sin evaluación').length
     };
     state.charts.classification?.destroy();
     state.charts.classification = new Chart(el('classificationChart'), {
@@ -656,23 +683,23 @@
   }
 
   function calculateAudit(responses) {
+    const total = responses.length;
+    const answered = responses.filter(r => r.answer).length;
+    const unanswered = total - answered;
     const applicable = responses.filter(r => r.answer && r.answer !== 'na');
     const compliant = applicable.filter(r => r.answer === 'complies').length;
     const noncompliant = applicable.filter(r => r.answer === 'non_complies').length;
     const critical = responses.filter(r => r.answer === 'non_complies' && r.is_critical_snapshot).length;
-    const score = applicable.length ? compliant / applicable.length * 100 : 0;
-    let classification = score >= 95 ? 'Conforme' : score >= 90 ? 'Conforme con observaciones' : 'No conforme';
-    if (critical > 0) classification = 'No conforme';
-    return { applicable: applicable.length, compliant, noncompliant, critical, score, classification };
+    const score = applicable.length ? compliant / applicable.length * 100 : null;
+    let classification = 'Sin evaluación';
+    if (score !== null) {
+      classification = score >= 95 ? 'Conforme' : score >= 90 ? 'Conforme con observaciones' : 'No conforme';
+      if (critical > 0) classification = 'No conforme';
+    }
+    return { total, answered, unanswered, complete: unanswered === 0 && total > 0, applicable: applicable.length, compliant, noncompliant, critical, score, classification };
   }
 
   async function finalizeAudit() {
-    const missing = state.activeResponses.filter(r => !r.answer);
-    if (missing.length) {
-      toast(`Faltan responder ${missing.length} ítems.`, 'warning');
-      document.querySelector(`[data-response-id="${missing[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
     const meta = collectExecutionMeta();
     const traceMissing = validateVehicleTraceability(meta);
     if (traceMissing.length) {
@@ -680,26 +707,40 @@
       el('editAuditMetaPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
+
     const calc = calculateAudit(state.activeResponses);
-    if (!confirm(`Resultado preliminar: ${calc.score.toFixed(1)}% · ${calc.classification}.\n\n¿Finalizar la auditoría? Quedará registrada en el historial y podrá editarse posteriormente con trazabilidad de cambios.`)) return;
+    const scoreText = calc.score === null ? 'Sin evaluación' : `${calc.score.toFixed(1)}% · ${calc.classification}`;
+    const warning = calc.unanswered > 0
+      ? `ATENCIÓN: hay ${calc.unanswered} ítem${calc.unanswered === 1 ? '' : 's'} sin responder.\n\nPodés finalizar igualmente, pero la auditoría quedará identificada como INCOMPLETA. El puntaje se calculará únicamente sobre los ítems respondidos y aplicables.\n\nResultado preliminar: ${scoreText}.\n\n¿Finalizar de todas formas?`
+      : `Resultado preliminar: ${scoreText}.\n\n¿Finalizar la auditoría? Quedará registrada en el historial y podrá editarse posteriormente con trazabilidad de cambios.`;
+    if (!confirm(warning)) return;
+
     loading(true);
     try {
       await saveDraftMetadata();
       await saveGeneralNotes();
       const payload = {
         ...meta,
-        status: 'completed', completed_at: new Date().toISOString(), score: Number(calc.score.toFixed(2)),
+        status: 'completed', completed_at: new Date().toISOString(), score: calc.score === null ? null : Number(calc.score.toFixed(2)),
         classification: calc.classification, critical_failures: calc.critical,
         applicable_items: calc.applicable, compliant_items: calc.compliant, noncompliant_items: calc.noncompliant,
+        total_items: calc.total, answered_items: calc.answered, unanswered_items: calc.unanswered, is_complete: calc.complete,
         general_notes: el('executionGeneralNotes').value.trim() || null
       };
       const { data, error } = await client.from('audits').update(payload).eq('id', state.activeAudit.id).select().single();
       if (error) throw error;
       state.activeAudit = null;
       state.activeResponses = [];
-      toast('Auditoría finalizada y registrada.', 'success');
+      toast(calc.complete ? 'Auditoría finalizada y registrada.' : `Auditoría finalizada con ${calc.unanswered} ítem(s) pendiente(s).`, calc.complete ? 'success' : 'warning');
       await openAudit(data.id);
-    } catch (e) { console.error(e); toast(e?.message || 'No se pudo finalizar la auditoría.', 'danger'); }
+    } catch (e) {
+      console.error(e);
+      const msg = String(e?.message || '');
+      const hint = (msg.includes('total_items') || msg.includes('answered_items') || msg.includes('unanswered_items') || msg.includes('is_complete') || msg.includes('schema cache'))
+        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+        : '';
+      toast(`${e?.message || 'No se pudo finalizar la auditoría.'}${hint}`, 'danger');
+    }
     finally { loading(false); }
   }
 
@@ -740,19 +781,18 @@
 
   async function saveCompletedAuditEdit() {
     if (!state.activeAudit || !state.editingCompleted) return;
-    const missing = state.activeResponses.filter(r => !r.answer);
-    if (missing.length) {
-      toast(`Faltan responder ${missing.length} ítems.`, 'warning');
-      document.querySelector(`[data-response-id="${missing[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
     const meta = collectExecutionMeta();
     const traceMissing = validateVehicleTraceability(meta);
     if (traceMissing.length) {
       toast(`Completá la trazabilidad del vehículo: ${traceMissing.join(', ')}.`, 'warning');
       return;
     }
-    if (!confirm('¿Guardar los cambios de esta auditoría? La modificación quedará registrada en la trazabilidad.')) return;
+
+    const calc = calculateAudit(state.activeResponses);
+    const warning = calc.unanswered > 0
+      ? `Esta auditoría quedará finalizada con ${calc.unanswered} ítem${calc.unanswered === 1 ? '' : 's'} sin responder y figurará como INCOMPLETA.\n\n¿Guardar los cambios igualmente? La modificación quedará registrada en la trazabilidad.`
+      : '¿Guardar los cambios de esta auditoría? La modificación quedará registrada en la trazabilidad.';
+    if (!confirm(warning)) return;
 
     loading(true);
     try {
@@ -768,23 +808,28 @@
         p_general_notes: el('executionGeneralNotes').value.trim() || null,
         p_responses: state.activeResponses.map(r => ({ id: r.id, answer: r.answer, observation: r.observation || null }))
       };
-      const { error } = await client.rpc('update_completed_audit_v3', params);
+      const { error } = await client.rpc('update_completed_audit_v4', params);
       if (error) throw error;
       const id = state.activeAudit.id;
       state.activeAudit = null;
       state.activeResponses = [];
       state.editingCompleted = false;
-      toast('Auditoría actualizada. El cambio quedó registrado.', 'success');
+      toast(calc.complete ? 'Auditoría actualizada. El cambio quedó registrado.' : `Auditoría actualizada e identificada como incompleta (${calc.unanswered} pendiente(s)).`, calc.complete ? 'success' : 'warning');
       await openAudit(id);
     } catch (e) {
       console.error(e);
-      const hint = String(e?.message || '').includes('update_completed_audit_v3') ? ' Ejecutá supabase/migration_v3_audit_types_bulk.sql en Supabase.' : '';
+      const msg = String(e?.message || '');
+      const hint = msg.includes('update_completed_audit_v4') || msg.includes('does not exist')
+        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+        : '';
       toast(`${e?.message || 'No se pudieron guardar los cambios.'}${hint}`, 'danger');
     } finally { loading(false); }
   }
 
   function openDeleteAuditModal(id) {
-    openDeleteAuditsModal([id]);
+    const selected = [...state.historySelected];
+    if (selected.length > 1 && state.historySelected.has(id)) openDeleteAuditsModal(selected);
+    else openDeleteAuditsModal([id]);
   }
 
   function openDeleteAuditsModal(ids) {
@@ -822,7 +867,10 @@
       else await loadDashboard();
     } catch (e) {
       console.error(e);
-      const hint = String(e?.message || '').includes('delete_audits_secure') ? ' Ejecutá supabase/migration_v3_audit_types_bulk.sql en Supabase.' : '';
+      const msg = String(e?.message || '');
+      const hint = (msg.includes('audit_activity_log') || msg.includes('delete_audits_secure') || msg.includes('does not exist'))
+        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+        : '';
       toast(`${e?.message || 'No se pudieron eliminar las auditorías.'}${hint}`, 'danger');
     } finally {
       el('confirmDeleteAuditBtn').textContent = 'Eliminar definitivamente';
@@ -886,6 +934,7 @@
       <td>${esc(a.auditor?.full_name || a.auditor?.email || '—')}</td>
       <td>${a.status === 'completed' ? `<strong>${pct(a.score)}</strong>` : '—'}</td>
       <td><span class="badge ${a.status === 'completed' ? 'badge-soft-success' : 'badge-soft-neutral'}">${statusLabel(a.status)}</span></td>
+      <td>${coverageBadge(a)}</td>
       <td>${a.classification ? `<span class="badge ${classificationClass(a.classification)}">${esc(a.classification)}</span>` : '—'}</td>
       <td class="text-end">
         <div class="d-inline-flex flex-wrap gap-1 justify-content-end">
@@ -895,7 +944,7 @@
           <button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.openDeleteAuditModal('${a.id}')">Eliminar</button>
         </div>
       </td>
-    </tr>`).join('') : `<tr><td colspan="10"><div class="empty-state">No hay auditorías para los filtros seleccionados.</div></td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="11"><div class="empty-state">No hay auditorías para los filtros seleccionados.</div></td></tr>`;
 
     const allVisibleSelected = rows.length > 0 && rows.every(a => state.historySelected.has(a.id));
     const someVisibleSelected = rows.some(a => state.historySelected.has(a.id));
@@ -925,8 +974,8 @@
   function updateHistorySelectionBar() {
     const count = state.historySelected.size;
     el('selectedAuditCount').textContent = count;
-    el('historySelectionBar').classList.toggle('d-none', count === 0);
     el('deleteSelectedAuditsBtn').disabled = count === 0;
+    el('clearHistorySelectionBtn').disabled = count === 0;
   }
 
   function activityAuditLabel(log) {
@@ -984,6 +1033,7 @@
     const groups = groupResponses(responses);
     const container = el('auditDetailContainer');
     const completed = audit.status === 'completed';
+    const coverage = auditCoverage(audit, responses);
     container.innerHTML = `
       <div class="d-flex flex-wrap gap-2 justify-content-between align-items-start mb-4">
         <div>
@@ -1000,10 +1050,13 @@
         </div>
       </div>
 
+      ${completed && !coverage.complete ? `<div class="alert alert-warning border-warning mb-4"><strong>Auditoría finalizada incompleta.</strong> Quedaron <strong>${coverage.unanswered}</strong> ítem${coverage.unanswered === 1 ? '' : 's'} sin responder (${coverage.answered}/${coverage.total} respondidos). El puntaje y la clasificación se calculan únicamente sobre los ítems respondidos y aplicables.</div>` : ''}
+
       <div class="row g-3 mb-4">
-        <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Puntaje</div><div class="score-big mt-2">${completed ? pct(audit.score) : '—'}</div><div class="mt-2">${audit.classification ? `<span class="badge ${classificationClass(audit.classification)}">${esc(audit.classification)}</span>` : '<span class="badge badge-soft-neutral">Borrador</span>'}</div></div></div>
-        <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Control</div><div class="mt-3"><strong>${audit.compliant_items || 0}</strong> cumple · <strong>${audit.noncompliant_items || 0}</strong> no cumple</div><div class="mt-2"><strong>${audit.critical_failures || 0}</strong> fallas críticas</div></div></div>
-        <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Trazabilidad operativa</div>${auditOperationCard(audit)}</div></div>
+        <div class="col-md-6 col-xl-3"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Puntaje</div><div class="score-big mt-2">${completed ? pct(audit.score) : '—'}</div><div class="mt-2">${audit.classification ? `<span class="badge ${classificationClass(audit.classification)}">${esc(audit.classification)}</span>` : '<span class="badge badge-soft-neutral">Borrador</span>'}</div></div></div>
+        <div class="col-md-6 col-xl-3"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Cobertura del checklist</div><div class="score-big mt-2">${coverage.answered}/${coverage.total}</div><div class="mt-2">${coverageBadge(audit, responses)}</div></div></div>
+        <div class="col-md-6 col-xl-3"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Control</div><div class="mt-3"><strong>${audit.compliant_items || 0}</strong> cumple · <strong>${audit.noncompliant_items || 0}</strong> no cumple</div><div class="mt-2"><strong>${audit.critical_failures || 0}</strong> fallas críticas</div></div></div>
+        <div class="col-md-6 col-xl-3"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Trazabilidad operativa</div>${auditOperationCard(audit)}</div></div>
       </div>
 
       ${groups.map(group => `<section class="audit-section">
@@ -1029,10 +1082,13 @@
   }
 
   function sectionScore(rows) {
+    const answered = rows.filter(r => r.answer).length;
+    const pending = rows.length - answered;
     const applicable = rows.filter(r => r.answer && r.answer !== 'na');
-    if (!applicable.length) return 'Sin ítems aplicables';
+    const coverageText = `${answered}/${rows.length} respondidos${pending ? ` · ${pending} pendiente${pending === 1 ? '' : 's'}` : ''}`;
+    if (!applicable.length) return `Sin puntaje · ${coverageText}`;
     const yes = applicable.filter(r => r.answer === 'complies').length;
-    return `${(yes / applicable.length * 100).toFixed(1)}%`;
+    return `${(yes / applicable.length * 100).toFixed(1)}% · ${coverageText}`;
   }
   const answerText = a => a === 'complies' ? 'CUMPLE' : a === 'non_complies' ? 'NO CUMPLE' : a === 'na' ? 'N/A' : 'SIN RESPUESTA';
   const answerTextClass = a => a === 'complies' ? 'text-success' : a === 'non_complies' ? 'text-danger' : 'text-secondary';
@@ -1054,6 +1110,7 @@
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const margin = 14;
     const typeLabel = auditTypeLabel(audit.audit_type);
+    const coverage = auditCoverage(audit, responses);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text('CLEAN IT', margin, 16);
     doc.setFontSize(13); doc.text(`Informe de Auditoría · ${typeLabel}`, margin, 24);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
@@ -1072,10 +1129,19 @@
 
     doc.autoTable({
       startY: yMeta + 1,
-      head: [['Puntaje', 'Resultado', 'Cumple', 'No cumple', 'Fallas críticas']],
-      body: [[pct(audit.score), audit.classification || '—', audit.compliant_items || 0, audit.noncompliant_items || 0, audit.critical_failures || 0]],
-      theme: 'grid', styles: { fontSize: 9 }, headStyles: { fillColor: [17, 24, 39] }
+      head: [['Puntaje', 'Resultado', 'Cobertura', 'Pendientes', 'Cumple', 'No cumple', 'Fallas críticas']],
+      body: [[pct(audit.score), audit.classification || '—', `${coverage.answered}/${coverage.total}`, coverage.unanswered, audit.compliant_items || 0, audit.noncompliant_items || 0, audit.critical_failures || 0]],
+      theme: 'grid', styles: { fontSize: 8 }, headStyles: { fillColor: [17, 24, 39] }
     });
+
+    if (audit.status === 'completed' && !coverage.complete) {
+      const warningY = doc.lastAutoTable.finalY + 5;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+      doc.text(`AUDITORÍA FINALIZADA INCOMPLETA: ${coverage.unanswered} ítem(s) sin responder.`, margin, warningY);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+      doc.text('El puntaje se calcula únicamente sobre los ítems respondidos y aplicables.', margin, warningY + 4);
+      doc.lastAutoTable.finalY = warningY + 5;
+    }
 
     groupResponses(responses).forEach(group => {
       const startY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : yMeta + 10;

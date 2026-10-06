@@ -1,13 +1,37 @@
-# Clean It · Auditorías Operativas Naón · V3
+# Clean It · Auditorías Operativas Naón · V4
 
 Webapp estática para ejecutar, registrar y analizar auditorías operativas de Clean It con Supabase.
 
-## Qué cambia en V3
+## Novedades de V4
 
-La operación queda separada en dos auditorías distintas:
+Esta versión corrige dos puntos operativos:
 
-### 1. Auditoría de estado del local
-Incluye únicamente:
+1. **Eliminación segura de auditorías**
+   - selección individual mediante checkbox;
+   - selección de algunas auditorías;
+   - selección de todas las auditorías visibles;
+   - eliminación múltiple;
+   - confirmación escribiendo exactamente `ELIMINAR`;
+   - registro de quién eliminó, cuándo y qué auditoría se eliminó;
+   - corrección de instalaciones donde faltaba la tabla `audit_activity_log`.
+
+2. **Auditorías finalizadas con ítems pendientes**
+   - ya no es obligatorio responder el 100% del checklist para finalizar;
+   - si existen ítems sin responder, la aplicación muestra una advertencia antes de finalizar;
+   - la auditoría queda marcada como **Finalizada incompleta**;
+   - Historial, detalle y PDF muestran cantidad respondida, total y pendientes;
+   - el puntaje se calcula únicamente sobre los ítems efectivamente respondidos y aplicables;
+   - una auditoría incompleta puede editarse posteriormente y pasar a completa cuando se respondan los pendientes.
+
+La trazabilidad operativa obligatoria de una auditoría de vehículo —patente, quién recibió, quiénes trabajaron y quién hizo el control final— se mantiene como requisito de cierre.
+
+---
+
+## Tipos de auditoría
+
+### Estado del local
+
+Incluye:
 
 1. Orden y limpieza del galpón
 2. Preparación para la operación
@@ -16,8 +40,9 @@ Incluye únicamente:
 
 Registra responsable operativo y personal presente.
 
-### 2. Auditoría de vehículo
-Incluye únicamente:
+### Vehículo
+
+Incluye:
 
 5. Recepción del cliente y del vehículo
 6. Pertenencias y preparación del vehículo
@@ -28,169 +53,162 @@ Incluye únicamente:
 11. Lavado exterior
 12. Control final y entrega
 
-Cada auditoría de vehículo registra:
+Registra:
 
 - patente;
 - quién recibió el vehículo;
 - quiénes trabajaron sobre el vehículo;
 - quién realizó el control final.
 
-La patente y los tres responsables operativos deben quedar completos antes de finalizar la auditoría.
+Las auditorías anteriores a la separación Local/Vehículo siguen identificadas como **Históricas**.
 
-Las auditorías creadas antes de V3 se conservan como **Históricas (formato anterior)**. No se reinterpretan como local o vehículo porque originalmente contenían las 12 secciones.
+---
 
 ## Funcionalidades
 
 - Login con Supabase Auth.
 - Roles `auditor` y `admin`.
-- Auditorías separadas por tipo: Local / Vehículo.
+- Auditorías Local / Vehículo.
 - Respuestas **Cumple / No cumple / N/A**.
-- Guardado automático de respuestas y metadatos durante borradores.
+- Ítems sin responder permitidos al cierre, con advertencia explícita.
+- Guardado automático durante la ejecución.
 - Borradores recuperables.
-- Cálculo automático de puntaje y clasificación.
-- Regla de criticidad: cualquier incumplimiento crítico fuerza **No conforme**.
-- Historial con filtros por fecha, tipo, estado y búsqueda.
-- Selección individual mediante checkbox.
-- **Seleccionar todo** sobre los resultados visibles.
+- Puntaje y clasificación automáticos.
+- Regla de criticidad.
+- Historial con filtros.
+- Checkbox por auditoría.
+- Botón **Seleccionar todo**.
 - Eliminación individual o múltiple.
-- Eliminación segura: exige escribir exactamente `ELIMINAR`.
-- Edición posterior de auditorías finalizadas.
-- Bitácora visible de ediciones y eliminaciones.
+- Confirmación de eliminación con `ELIMINAR`.
+- Edición de auditorías finalizadas.
+- Registro de ediciones y eliminaciones.
+- Panel consolidado.
+- KPI de auditorías finalizadas incompletas.
 - Vista individual de cada auditoría.
-- Panel con filtro por tipo de auditoría.
-- Descarga de informe individual en PDF.
-- Administración del checklist separada por Local / Vehículo.
-- Crear, editar, activar/desactivar y eliminar secciones e ítems.
+- Informes PDF.
+- Administración de secciones e ítems.
 - Administración de roles.
-- Snapshot histórico del checklist: los cambios futuros no alteran auditorías anteriores.
+- Snapshot histórico del checklist.
+
+---
 
 ## Lógica de evaluación
 
 - `Cumple` = 1 punto.
 - `No cumple` = 0 puntos.
 - `N/A` queda fuera del denominador.
-- Puntaje = ítems cumplidos / ítems aplicables × 100.
+- `Sin responder` queda fuera del cálculo y genera estado **Incompleta**.
+- Puntaje = ítems cumplidos / ítems respondidos aplicables × 100.
 - 95–100% = **Conforme**.
 - 90–94,99% = **Conforme con observaciones**.
 - Menos de 90% = **No conforme**.
-- Al menos un `No cumple` crítico = **No conforme**, independientemente del porcentaje.
+- Un incumplimiento crítico fuerza **No conforme**.
+- Si no existe ningún ítem evaluable, el resultado es **Sin evaluación**.
 
-## Stack
-
-- HTML5
-- CSS3
-- JavaScript
-- Bootstrap 5.3
-- Supabase JS v2
-- Supabase Auth + Postgres + Row Level Security
-- Chart.js
-- jsPDF + AutoTable
-
-No requiere Node, npm ni build. Puede publicarse directamente en GitHub Pages.
+Importante: una auditoría puede estar **Finalizada** y al mismo tiempo **Incompleta**. Son dos conceptos distintos: finalizada indica que fue cerrada; incompleta indica que quedaron preguntas sin responder.
 
 ---
 
-# Actualización desde tu versión actual V2
+# Actualización desde la V3 actualmente publicada
 
-## 1. Reemplazar los archivos de GitHub
+## 1. Reemplazar los archivos del repositorio
 
-Reemplazá el contenido actual del repositorio por el contenido de esta carpeta y hacé commit/push a `main`.
+Reemplazá los archivos actuales del repositorio GitHub por los de esta carpeta y hacé commit/push a `main`.
 
 GitHub Pages volverá a desplegar automáticamente.
 
-## 2. Ejecutar la migración V3 en Supabase
+## 2. Ejecutar UNA migración en Supabase
 
-En Supabase abrir:
+Abrí:
 
-`SQL Editor → New query`
+`Supabase → SQL Editor → New query`
 
-Copiar y ejecutar completo:
+Copiá y ejecutá completo:
 
-`supabase/migration_v3_audit_types_bulk.sql`
+`supabase/migration_v4_incomplete_and_delete_fix.sql`
 
-**No vuelvas a ejecutar `migration_v2_edit_delete.sql` si ya la ejecutaste.**
+Esta migración es **idempotente**: si por error la ejecutás nuevamente, no debería duplicar estructura.
 
-La migración V3:
+### Esta migración es obligatoria
 
-- agrega tipo de auditoría a secciones y auditorías;
-- asigna secciones 1–4 a `local`;
-- asigna secciones 5–12 a `vehicle`;
-- conserva auditorías previas como `legacy`;
-- agrega los tres responsables específicos del vehículo;
-- agrega edición V3 con trazabilidad;
-- agrega eliminación múltiple segura y atómica;
-- conserva en la bitácora metadata suficiente para identificar una auditoría eliminada.
+El error:
 
-## 3. Supabase ya está configurado
+`relation "public.audit_activity_log" does not exist`
 
-`assets/js/config.js` ya contiene la URL y Publishable Key provistas para este proyecto.
+significa que la base actual no tiene creada la bitácora requerida para la eliminación segura. La migración V4 la crea y vuelve a instalar las funciones de eliminación.
 
-No uses una `service_role` key en código cliente. La protección de datos se realiza con políticas RLS y funciones SQL con validación explícita de permisos.
+Además agrega a `audits`:
+
+- `total_items`
+- `answered_items`
+- `unanswered_items`
+- `is_complete`
+
+También instala `update_completed_audit_v4`, que permite editar auditorías finalizadas aunque existan ítems sin respuesta.
+
+**No necesitás volver a ejecutar schema.sql, migration_v2 ni migration_v3 sobre tu instalación actual.**
 
 ---
 
 # Instalación desde cero
 
-Si se trata de un proyecto Supabase nuevo, ejecutá solamente:
+En un proyecto Supabase nuevo ejecutá solamente:
 
 `supabase/schema.sql`
 
-Ese archivo ya incluye el esquema base y las migraciones V2 + V3.
+El archivo integra el esquema base y las migraciones hasta V4.
 
 Después:
 
 1. Crear usuarios en `Authentication → Users`.
-2. Promover al primer administrador ejecutando `supabase/promote-admin.sql` o:
-
-```sql
-update public.profiles
-set role = 'admin'
-where email = 'tu-email@empresa.com';
-```
-
-3. Subir los archivos a GitHub.
+2. Promover el primer administrador ejecutando `supabase/promote-admin.sql`.
+3. Subir el contenido a GitHub.
 4. Activar GitHub Pages desde `Settings → Pages → Deploy from a branch → main → /(root)`.
+
+`assets/js/config.js` ya contiene la URL y Publishable Key configuradas para este proyecto.
+
+Nunca colocar una `service_role` key en una web estática.
 
 ---
 
-# Roles
+## Roles
 
-## Auditor
+### Auditor
 
-- Crear auditorías de local y vehículo.
-- Completar y recuperar borradores.
+- Crear auditorías.
+- Guardar borradores.
+- Finalizar auditorías completas o incompletas.
 - Ver sus auditorías.
 - Editar sus auditorías finalizadas.
 - Eliminar una o varias de sus auditorías con confirmación segura.
-- Consultar la trazabilidad disponible de sus registros.
 - Descargar informes PDF.
 
-## Admin
+### Admin
 
-Incluye lo anterior y además:
+Además puede:
 
-- Ver auditorías de todos los auditores.
-- Editar cualquier auditoría finalizada.
-- Eliminar una o varias auditorías de cualquier auditor.
-- Ver el panel consolidado.
-- Administrar secciones e ítems de cada tipo de auditoría.
-- Cambiar roles de otros usuarios.
+- ver todas las auditorías;
+- editar auditorías de cualquier auditor;
+- eliminar auditorías de cualquier auditor;
+- ver el panel consolidado;
+- administrar checklist;
+- administrar roles.
 
-La autorización efectiva se controla en Supabase mediante RLS y RPC seguras, no sólo mediante la interfaz.
-
----
-
-# Trazabilidad
-
-Cada auditoría guarda una copia del texto de las preguntas, criterios, criticidad y orden utilizados en el momento de ejecución. Si el checklist maestro cambia más adelante, el histórico sigue mostrando el estándar que efectivamente se auditó.
-
-Cuando una auditoría finalizada se edita, Supabase guarda una entrada en `audit_activity_log` con la versión anterior y posterior y recalcula puntaje, clasificación y fallas críticas.
-
-Cuando una o varias auditorías se eliminan, se exige escribir **ELIMINAR**. La auditoría y sus respuestas desaparecen del historial operativo, pero `audit_activity_log` conserva quién realizó la eliminación, cuándo y metadata identificatoria del registro eliminado. Las respuestas eliminadas no se conservan.
+La autorización real se controla mediante Supabase RLS y funciones SQL, no solamente desde la interfaz.
 
 ---
 
-# Estructura
+## Trazabilidad
+
+Cada auditoría conserva una copia del texto y configuración de las preguntas utilizadas en el momento de ejecución.
+
+Cuando se edita una auditoría finalizada, `audit_activity_log` conserva la versión anterior y posterior junto con usuario y fecha.
+
+Cuando se elimina una auditoría, se elimina definitivamente el registro operativo y sus respuestas, pero queda una entrada de trazabilidad con usuario, fecha y metadata identificatoria básica.
+
+---
+
+## Estructura
 
 ```text
 cleanit-auditorias/
@@ -207,9 +225,6 @@ cleanit-auditorias/
     ├── schema.sql
     ├── migration_v2_edit_delete.sql
     ├── migration_v3_audit_types_bulk.sql
+    ├── migration_v4_incomplete_and_delete_fix.sql
     └── promote-admin.sql
 ```
-
-## Recomendación de gobernanza
-
-Si una pregunta deja de utilizarse, es preferible marcarla como **Inactiva** antes que eliminarla. Así se mantiene visible como parte del estándar histórico de gestión sin aparecer en auditorías nuevas.

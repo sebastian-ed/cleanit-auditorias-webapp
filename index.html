@@ -104,10 +104,11 @@
           </div>
 
           <div class="row g-3 mb-4">
-            <div class="col-6 col-xl-3"><div class="metric-card"><div class="metric-label">Auditorías completas</div><div id="kpiTotal" class="metric-value">—</div><div class="metric-foot">Histórico visible</div></div></div>
-            <div class="col-6 col-xl-3"><div class="metric-card"><div class="metric-label">Promedio</div><div id="kpiAverage" class="metric-value">—</div><div class="metric-foot">Puntaje promedio</div></div></div>
-            <div class="col-6 col-xl-3"><div class="metric-card"><div class="metric-label">No conformes</div><div id="kpiNonConform" class="metric-value">—</div><div class="metric-foot">Incluye fallas críticas</div></div></div>
-            <div class="col-6 col-xl-3"><div class="metric-card"><div class="metric-label">Fallas críticas</div><div id="kpiCritical" class="metric-value">—</div><div class="metric-foot">Acumuladas</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Auditorías finalizadas</div><div id="kpiTotal" class="metric-value">—</div><div class="metric-foot">Histórico visible</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Promedio</div><div id="kpiAverage" class="metric-value">—</div><div class="metric-foot">Sobre ítems respondidos</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">No conformes</div><div id="kpiNonConform" class="metric-value">—</div><div class="metric-foot">Según ítems evaluados</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Fallas críticas</div><div id="kpiCritical" class="metric-value">—</div><div class="metric-foot">Acumuladas</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Finalizadas incompletas</div><div id="kpiIncomplete" class="metric-value">—</div><div class="metric-foot">Con ítems sin responder</div></div></div>
           </div>
 
           <div class="row g-3 mb-4">
@@ -132,7 +133,7 @@
             </div>
             <div class="table-responsive">
               <table class="table align-middle mb-0">
-                <thead><tr><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Auditor</th><th>Puntaje</th><th>Resultado</th><th></th></tr></thead>
+                <thead><tr><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Auditor</th><th>Puntaje</th><th>Resultado</th><th>Cobertura</th><th></th></tr></thead>
                 <tbody id="recentAuditsBody"></tbody>
               </table>
             </div>
@@ -249,11 +250,11 @@
               <div class="col-md-2"><label class="form-label small">Desde</label><input id="historyFrom" type="date" class="form-control"></div>
               <div class="col-md-2"><label class="form-label small">Hasta</label><input id="historyTo" type="date" class="form-control"></div>
               <div class="col-md-2"><label class="form-label small">Tipo</label><select id="historyType" class="form-select"><option value="">Todos</option><option value="local">Estado del local</option><option value="vehicle">Vehículo</option><option value="legacy">Históricas</option></select></div>
-              <div class="col-md-2"><label class="form-label small">Estado</label><select id="historyStatus" class="form-select"><option value="">Todos</option><option value="completed">Completadas</option><option value="draft">Borradores</option></select></div>
+              <div class="col-md-2"><label class="form-label small">Estado</label><select id="historyStatus" class="form-select"><option value="">Todos</option><option value="completed">Finalizadas</option><option value="draft">Borradores</option></select></div>
               <div class="col-md-4"><label class="form-label small">Buscar</label><input id="historySearch" class="form-control" placeholder="Patente / responsable / operario"></div>
             </div>
           </div>
-          <div id="historySelectionBar" class="selection-toolbar d-none mb-3">
+          <div id="historySelectionBar" class="selection-toolbar mb-3">
             <div><strong id="selectedAuditCount">0</strong> auditorías seleccionadas</div>
             <div class="d-flex flex-wrap gap-2">
               <button id="selectAllHistoryBtn" type="button" class="btn btn-sm btn-outline-secondary">Seleccionar todo</button>
@@ -264,7 +265,7 @@
           <div class="panel-card">
             <div class="table-responsive">
               <table class="table align-middle mb-0">
-                <thead><tr><th style="width:44px"><input id="historySelectAllCheckbox" class="form-check-input" type="checkbox" aria-label="Seleccionar todas"></th><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Responsables</th><th>Auditor</th><th>Puntaje</th><th>Estado</th><th>Resultado</th><th></th></tr></thead>
+                <thead><tr><th style="width:44px"><input id="historySelectAllCheckbox" class="form-check-input" type="checkbox" aria-label="Seleccionar todas"></th><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Responsables</th><th>Auditor</th><th>Puntaje</th><th>Estado</th><th>Cobertura</th><th>Resultado</th><th></th></tr></thead>
                 <tbody id="historyBody"></tbody>
               </table>
             </div>
