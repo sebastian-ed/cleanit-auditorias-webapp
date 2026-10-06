@@ -1,7 +1,7 @@
 // ============================================================
-// CONFIGURACIÓN SUPABASE
-// Reemplazar por los valores de Project Settings > API.
-// Se puede usar la Publishable Key o la Anon Key.
+// CONFIGURACIÓN SUPABASE · Clean It Auditorías
+// Publishable Key: apta para uso en cliente. La seguridad de datos
+// se controla mediante Row Level Security (RLS) en Supabase.
 // NUNCA colocar aquí una service_role key.
 // ============================================================
 window.CLEANIT_CONFIG = {

@@ -14,7 +14,13 @@
     activeAudit: null,
     activeResponses: [],
     activeChecklist: [],
+    editingCompleted: false,
+    deleteAuditId: null,
+    deleteAuditIds: [],
+    historySelected: new Set(),
     history: [],
+    activityLog: [],
+    dashboardAudits: [],
     charts: { classification: null, sections: null },
     modals: {}
   };
@@ -50,6 +56,12 @@
 
   const roleLabel = role => role === 'admin' ? 'Administrador' : 'Auditor';
   const statusLabel = status => status === 'completed' ? 'Completada' : 'Borrador';
+  const auditTypeLabel = type => type === 'local' ? 'Estado del local' : type === 'vehicle' ? 'Vehículo' : 'Histórica';
+  const auditTypeBadgeClass = type => type === 'vehicle' ? 'badge-soft-warning' : type === 'local' ? 'badge-soft-success' : 'badge-soft-neutral';
+  const auditIdentity = audit => audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'Sin patente') : audit.audit_type === 'local' ? 'Estado general del local' : (audit.vehicle_plate || 'Auditoría histórica');
+  const auditPeopleSummary = audit => audit.audit_type === 'vehicle'
+    ? [audit.vehicle_received_by ? `Recibió: ${audit.vehicle_received_by}` : '', audit.vehicle_workers_text ? `Equipo: ${audit.vehicle_workers_text}` : '', audit.vehicle_final_control_by ? `Control: ${audit.vehicle_final_control_by}` : ''].filter(Boolean).join(' · ') || '—'
+    : [audit.responsible_name ? `Responsable: ${audit.responsible_name}` : '', audit.operators_text ? `Personal: ${audit.operators_text}` : ''].filter(Boolean).join(' · ') || '—';
 
   const classificationClass = (c) => {
     if (c === 'Conforme') return 'badge-soft-success';
@@ -122,6 +134,7 @@
     bindGlobalEvents();
     state.modals.section = new bootstrap.Modal(el('sectionModal'));
     state.modals.item = new bootstrap.Modal(el('itemModal'));
+    state.modals.deleteAudit = new bootstrap.Modal(el('deleteAuditModal'));
 
     if (!configReady) {
       el('loginView').classList.remove('d-none');
@@ -151,18 +164,53 @@
     $$('[data-nav]').forEach(b => b.addEventListener('click', () => setView(b.dataset.nav)));
 
     el('auditStartForm').addEventListener('submit', startAudit);
-    el('finalizeAuditBtn').addEventListener('click', finalizeAudit);
+    $$('input[name="auditType"]').forEach(r => r.addEventListener('change', toggleAuditStartFields));
+    el('finalizeAuditBtn').addEventListener('click', async () => {
+      if (state.editingCompleted) await saveCompletedAuditEdit();
+      else await finalizeAudit();
+    });
     el('exitDraftBtn').addEventListener('click', async () => {
+      if (state.editingCompleted) {
+        state.activeAudit = null;
+        state.activeResponses = [];
+        state.editingCompleted = false;
+        setView('history');
+        return;
+      }
+      await saveDraftMetadata();
       await saveGeneralNotes();
       state.activeAudit = null;
       state.activeResponses = [];
       setView('history');
     });
     el('executionGeneralNotes').addEventListener('change', saveGeneralNotes);
-
-    ['historyFrom', 'historyTo', 'historyStatus', 'historySearch'].forEach(id => {
-      el(id).addEventListener(id === 'historySearch' ? 'input' : 'change', renderHistory);
+    ['editAuditDate','editResponsibleName','editOperatorsText','editVehiclePlate','editVehicleReceivedBy','editVehicleWorkersText','editVehicleFinalControlBy'].forEach(id => {
+      el(id)?.addEventListener('change', saveDraftMetadata);
     });
+
+    el('deleteAuditConfirmInput').addEventListener('input', () => {
+      const valid = el('deleteAuditConfirmInput').value.trim() === 'ELIMINAR';
+      el('confirmDeleteAuditBtn').disabled = !valid;
+    });
+    el('confirmDeleteAuditBtn').addEventListener('click', confirmDeleteAudit);
+    el('deleteAuditModal').addEventListener('hidden.bs.modal', () => {
+      state.deleteAuditId = null;
+      state.deleteAuditIds = [];
+      el('deleteAuditConfirmInput').value = '';
+      el('confirmDeleteAuditBtn').disabled = true;
+    });
+
+    ['historyFrom', 'historyTo', 'historyType', 'historyStatus', 'historySearch'].forEach(id => {
+      el(id).addEventListener(id === 'historySearch' ? 'input' : 'change', () => {
+        state.historySelected.clear();
+        renderHistory();
+      });
+    });
+    el('historySelectAllCheckbox').addEventListener('change', (ev) => selectAllVisibleHistory(ev.target.checked));
+    el('selectAllHistoryBtn').addEventListener('click', () => selectAllVisibleHistory(true));
+    el('clearHistorySelectionBtn').addEventListener('click', clearHistorySelection);
+    el('deleteSelectedAuditsBtn').addEventListener('click', () => openDeleteAuditsModal([...state.historySelected]));
+    el('dashboardTypeFilter').addEventListener('change', renderDashboard);
 
     el('addSectionBtn').addEventListener('click', () => openSectionModal());
     el('sectionForm').addEventListener('submit', saveSection);
@@ -221,15 +269,17 @@
     state.profile = null;
     state.activeAudit = null;
     state.activeResponses = [];
+    state.editingCompleted = false;
     showLogin();
   }
 
   // ============================================================
   // CHECKLIST DATA
   // ============================================================
-  async function fetchChecklist(activeOnly = true) {
+  async function fetchChecklist(activeOnly = true, auditType = null) {
     let sectionQuery = client.from('audit_sections').select('*').order('sort_order');
     if (activeOnly) sectionQuery = sectionQuery.eq('is_active', true);
+    if (auditType && ['local','vehicle'].includes(auditType)) sectionQuery = sectionQuery.eq('audit_type', auditType);
     const { data: sections, error: sectionError } = await sectionQuery;
     if (sectionError) throw sectionError;
 
@@ -238,7 +288,7 @@
     const { data: items, error: itemError } = await itemQuery;
     if (itemError) throw itemError;
 
-    return sections.map(s => ({ ...s, items: items.filter(i => i.section_id === s.id) }));
+    return sections.map(section => ({ ...section, items: items.filter(item => item.section_id === section.id) }));
   }
 
   // ============================================================
@@ -254,33 +304,41 @@
         .order('audit_date', { ascending: false })
         .limit(500);
       if (error) throw error;
-
-      const total = audits.length;
-      const avg = total ? audits.reduce((a, x) => a + Number(x.score || 0), 0) / total : 0;
-      const non = audits.filter(x => x.classification === 'No conforme').length;
-      const critical = audits.reduce((a, x) => a + Number(x.critical_failures || 0), 0);
-      el('kpiTotal').textContent = total;
-      el('kpiAverage').textContent = total ? pct(avg) : '—';
-      el('kpiNonConform').textContent = non;
-      el('kpiCritical').textContent = critical;
-      el('dashboardScope').textContent = state.profile.role === 'admin' ? 'Resultados consolidados de todos los auditores.' : 'Resultados de tus auditorías.';
-
-      renderRecentAudits(audits.slice(0, 7));
-      renderClassificationChart(audits);
-      await renderSectionsChart(audits);
+      state.dashboardAudits = audits || [];
+      await renderDashboard();
     } catch (e) { console.error(e); }
     finally { loading(false); }
+  }
+
+  async function renderDashboard() {
+    const type = el('dashboardTypeFilter')?.value || '';
+    const audits = state.dashboardAudits.filter(a => !type || a.audit_type === type);
+    const total = audits.length;
+    const avg = total ? audits.reduce((sum, x) => sum + Number(x.score || 0), 0) / total : 0;
+    const non = audits.filter(x => x.classification === 'No conforme').length;
+    const critical = audits.reduce((sum, x) => sum + Number(x.critical_failures || 0), 0);
+    el('kpiTotal').textContent = total;
+    el('kpiAverage').textContent = total ? pct(avg) : '—';
+    el('kpiNonConform').textContent = non;
+    el('kpiCritical').textContent = critical;
+    const base = state.profile.role === 'admin' ? 'Resultados consolidados de todos los auditores.' : 'Resultados de tus auditorías.';
+    el('dashboardScope').textContent = `${base} ${type ? `Filtro: ${auditTypeLabel(type)}.` : 'Podés filtrar por tipo de auditoría.'}`;
+
+    renderRecentAudits(audits.slice(0, 7));
+    renderClassificationChart(audits);
+    await renderSectionsChart(audits);
   }
 
   function renderRecentAudits(audits) {
     const body = el('recentAuditsBody');
     if (!audits.length) {
-      body.innerHTML = `<tr><td colspan="6"><div class="empty-state">Todavía no hay auditorías completadas.</div></td></tr>`;
+      body.innerHTML = `<tr><td colspan="7"><div class="empty-state">Todavía no hay auditorías completadas para este filtro.</div></td></tr>`;
       return;
     }
     body.innerHTML = audits.map(a => `<tr>
       <td>${fmtDate(a.audit_date)}</td>
-      <td class="fw-semibold">${esc(a.vehicle_plate || '—')}</td>
+      <td><span class="badge ${auditTypeBadgeClass(a.audit_type)}">${esc(auditTypeLabel(a.audit_type))}</span></td>
+      <td class="fw-semibold">${esc(auditIdentity(a))}</td>
       <td>${esc(a.auditor?.full_name || a.auditor?.email || '—')}</td>
       <td><strong>${pct(a.score)}</strong></td>
       <td><span class="badge ${classificationClass(a.classification)}">${esc(a.classification)}</span></td>
@@ -341,27 +399,48 @@
   // ============================================================
   // AUDIT EXECUTION
   // ============================================================
+  function toggleAuditStartFields() {
+    const type = document.querySelector('input[name="auditType"]:checked')?.value || 'local';
+    el('startLocalFields').classList.toggle('d-none', type !== 'local');
+    el('startVehicleFields').classList.toggle('d-none', type !== 'vehicle');
+    el('vehiclePlate').required = type === 'vehicle';
+  }
+
   function resetNewAuditView() {
+    state.editingCompleted = false;
     el('auditStartPanel').classList.remove('d-none');
     el('auditExecutionPanel').classList.add('d-none');
+    el('editAuditMetaPanel').classList.add('d-none');
     el('auditStartForm').reset();
+    const localRadio = document.querySelector('input[name="auditType"][value="local"]');
+    if (localRadio) localRadio.checked = true;
     el('auditDate').value = todayISO();
+    toggleAuditStartFields();
   }
 
   async function startAudit(ev) {
     ev.preventDefault();
     loading(true);
     try {
-      const checklist = await fetchChecklist(true);
-      const activeItems = checklist.flatMap(s => s.items);
-      if (!activeItems.length) throw new Error('No hay ítems activos en el checklist.');
+      const auditType = document.querySelector('input[name="auditType"]:checked')?.value || 'local';
+      if (!['local','vehicle'].includes(auditType)) throw new Error('Seleccioná un tipo de auditoría válido.');
+      if (auditType === 'vehicle' && !el('vehiclePlate').value.trim()) throw new Error('La patente es obligatoria para una auditoría de vehículo.');
 
+      const checklist = await fetchChecklist(true, auditType);
+      const activeItems = checklist.flatMap(section => section.items);
+      if (!activeItems.length) throw new Error(`No hay ítems activos para la auditoría de ${auditTypeLabel(auditType).toLowerCase()}.`);
+
+      state.editingCompleted = false;
       const meta = {
         audit_date: el('auditDate').value || todayISO(),
         auditor_id: state.profile.id,
-        responsible_name: el('responsibleName').value.trim() || null,
-        operators_text: el('operatorsText').value.trim() || null,
-        vehicle_plate: el('vehiclePlate').value.trim().toUpperCase() || null,
+        audit_type: auditType,
+        responsible_name: auditType === 'local' ? (el('responsibleName').value.trim() || null) : null,
+        operators_text: auditType === 'local' ? (el('operatorsText').value.trim() || null) : null,
+        vehicle_plate: auditType === 'vehicle' ? (el('vehiclePlate').value.trim().toUpperCase() || null) : null,
+        vehicle_received_by: auditType === 'vehicle' ? (el('vehicleReceivedBy').value.trim() || null) : null,
+        vehicle_workers_text: auditType === 'vehicle' ? (el('vehicleWorkersText').value.trim() || null) : null,
+        vehicle_final_control_by: auditType === 'vehicle' ? (el('vehicleFinalControlBy').value.trim() || null) : null,
         general_notes: el('auditGeneralNotes').value.trim() || null,
         status: 'draft'
       };
@@ -383,15 +462,15 @@
         answer: null,
         observation: null
       })));
-      const { data: responses, error: rError } = await client.from('audit_responses').insert(snapshots).select();
-      if (rError) throw rError;
+      const { data: responses, error: responseError } = await client.from('audit_responses').insert(snapshots).select();
+      if (responseError) throw responseError;
 
       state.activeAudit = audit;
       state.activeResponses = responses;
       state.activeChecklist = checklist;
       showAuditExecution();
-      toast('Auditoría iniciada. Los cambios se guardan automáticamente.', 'success');
-    } catch (e) { console.error(e); }
+      toast('Auditoría iniciada. Las respuestas se guardan automáticamente.', 'success');
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo iniciar la auditoría.', 'danger'); }
     finally { loading(false); }
   }
 
@@ -410,17 +489,85 @@
   function showAuditExecution() {
     el('auditStartPanel').classList.add('d-none');
     el('auditExecutionPanel').classList.remove('d-none');
-    const a = state.activeAudit;
-    el('activeAuditTitle').textContent = a.vehicle_plate ? `Vehículo ${a.vehicle_plate}` : 'Auditoría operativa Naón';
-    el('activeAuditMeta').textContent = `${fmtDate(a.audit_date)} · Auditor: ${state.profile.full_name || state.profile.email}`;
-    el('executionGeneralNotes').value = a.general_notes || '';
+    const audit = state.activeAudit;
+    const editing = state.editingCompleted;
+    const type = audit.audit_type || 'legacy';
+
+    const title = type === 'vehicle'
+      ? `Vehículo ${audit.vehicle_plate || 'sin patente'}`
+      : type === 'local' ? 'Estado general del local' : (audit.vehicle_plate ? `Auditoría histórica · ${audit.vehicle_plate}` : 'Auditoría histórica');
+    el('activeAuditTitle').textContent = editing ? `Editando · ${title}` : title;
+    el('activeAuditMeta').textContent = `${auditTypeLabel(type)} · ${fmtDate(audit.audit_date)} · Auditor: ${audit.auditor?.full_name || audit.auditor?.email || state.profile.full_name || state.profile.email}${editing ? ' · Edición registrada' : ''}`;
+    el('executionGeneralNotes').value = audit.general_notes || '';
+
+    // Los metadatos quedan visibles también en borrador para poder completar, por ejemplo, quién hizo el control final.
+    el('editAuditMetaPanel').classList.remove('d-none');
+    el('editMetaHelp').textContent = editing ? 'La edición quedará registrada en la trazabilidad de cambios.' : 'Podés completar o corregir estos datos durante la auditoría; se guardan en el borrador.';
+    el('editAuditDate').value = audit.audit_date || todayISO();
+    el('editAuditTypeLabel').value = auditTypeLabel(type);
+    el('editResponsibleName').value = audit.responsible_name || '';
+    el('editOperatorsText').value = audit.operators_text || '';
+    el('editVehiclePlate').value = audit.vehicle_plate || '';
+    el('editVehicleReceivedBy').value = audit.vehicle_received_by || '';
+    el('editVehicleWorkersText').value = audit.vehicle_workers_text || '';
+    el('editVehicleFinalControlBy').value = audit.vehicle_final_control_by || '';
+    el('editLocalFields').classList.toggle('d-none', type === 'vehicle');
+    el('editVehicleFields').classList.toggle('d-none', type === 'local');
+
+    const badge = el('editModeBadge');
+    if (badge) {
+      badge.textContent = editing ? 'Modo edición' : 'Datos editables';
+      badge.className = editing ? 'badge text-bg-warning' : 'badge text-bg-light border';
+    }
+
+    if (editing) {
+      el('exitDraftBtn').textContent = 'Cancelar edición';
+      el('finalizeAuditBtn').textContent = 'Guardar cambios';
+      el('finalizeAuditBtn').className = 'btn btn-dark btn-lg';
+    } else {
+      el('exitDraftBtn').textContent = 'Guardar y salir';
+      el('finalizeAuditBtn').textContent = 'Finalizar auditoría';
+      el('finalizeAuditBtn').className = 'btn btn-success btn-lg';
+    }
+
     renderAuditChecklist();
     updateAuditProgress();
   }
 
+  function collectExecutionMeta() {
+    const type = state.activeAudit?.audit_type || 'legacy';
+    return {
+      audit_date: el('editAuditDate').value || state.activeAudit?.audit_date || todayISO(),
+      responsible_name: type === 'vehicle' ? null : (el('editResponsibleName').value.trim() || null),
+      operators_text: type === 'vehicle' ? null : (el('editOperatorsText').value.trim() || null),
+      vehicle_plate: type === 'local' ? null : (el('editVehiclePlate').value.trim().toUpperCase() || null),
+      vehicle_received_by: type === 'vehicle' ? (el('editVehicleReceivedBy').value.trim() || null) : null,
+      vehicle_workers_text: type === 'vehicle' ? (el('editVehicleWorkersText').value.trim() || null) : null,
+      vehicle_final_control_by: type === 'vehicle' ? (el('editVehicleFinalControlBy').value.trim() || null) : null
+    };
+  }
+
+  function validateVehicleTraceability(meta) {
+    if (state.activeAudit?.audit_type !== 'vehicle') return [];
+    const missing = [];
+    if (!meta.vehicle_plate) missing.push('patente');
+    if (!meta.vehicle_received_by) missing.push('quién recibió el vehículo');
+    if (!meta.vehicle_workers_text) missing.push('quiénes trabajaron sobre el vehículo');
+    if (!meta.vehicle_final_control_by) missing.push('quién realizó el control final');
+    return missing;
+  }
+
+  async function saveDraftMetadata() {
+    if (!state.activeAudit || state.editingCompleted) return;
+    const meta = collectExecutionMeta();
+    Object.assign(state.activeAudit, meta);
+    const { error } = await client.from('audits').update(meta).eq('id', state.activeAudit.id);
+    if (error) toast(error.message, 'danger');
+  }
+
   function renderAuditChecklist() {
-    const c = el('auditChecklistContainer');
-    c.innerHTML = groupResponses(state.activeResponses).map(group => {
+    const container = el('auditChecklistContainer');
+    container.innerHTML = groupResponses(state.activeResponses).map(group => {
       const answered = group.rows.filter(r => r.answer).length;
       return `<section class="audit-section">
         <div class="audit-section-head"><div><h3 class="h6 mb-1">${esc(group.title)}</h3><div class="small text-secondary">${answered}/${group.rows.length} respondidos</div></div></div>
@@ -443,8 +590,8 @@
       </section>`;
     }).join('');
 
-    $$('.answer-btn', c).forEach(btn => btn.addEventListener('click', () => answerResponse(btn.dataset.id, btn.dataset.answer)));
-    $$('.response-observation', c).forEach(inp => inp.addEventListener('change', () => saveObservation(inp.dataset.id, inp.value)));
+    $$('.answer-btn', container).forEach(btn => btn.addEventListener('click', () => answerResponse(btn.dataset.id, btn.dataset.answer)));
+    $$('.response-observation', container).forEach(inp => inp.addEventListener('change', () => saveObservation(inp.dataset.id, inp.value)));
   }
 
   function answerButton(r, value, label) {
@@ -452,41 +599,50 @@
   }
 
   async function answerResponse(id, answer) {
-    const r = state.activeResponses.find(x => x.id === id);
-    if (!r) return;
-    const old = r.answer;
-    r.answer = answer;
+    const response = state.activeResponses.find(x => x.id === id);
+    if (!response) return;
+    const old = response.answer;
+    response.answer = answer;
     const row = document.querySelector(`[data-response-id="${id}"]`);
-    $$('.answer-btn', row).forEach(b => b.classList.toggle('selected', b.dataset.answer === answer));
+    $$('.answer-btn', row).forEach(button => button.classList.toggle('selected', button.dataset.answer === answer));
     updateAuditProgress();
-    const ind = document.querySelector(`[data-save-for="${id}"]`);
-    if (ind) ind.textContent = 'Guardando…';
+    const indicator = document.querySelector(`[data-save-for="${id}"]`);
+    if (state.editingCompleted) {
+      if (indicator) indicator.textContent = 'Cambio pendiente';
+      return;
+    }
+    if (indicator) indicator.textContent = 'Guardando…';
     const { error } = await client.from('audit_responses').update({ answer }).eq('id', id);
     if (error) {
-      r.answer = old;
+      response.answer = old;
       renderAuditChecklist();
       updateAuditProgress();
       toast(error.message, 'danger');
-    } else if (ind) {
-      ind.textContent = 'Guardado';
-      setTimeout(() => { if (ind) ind.textContent = ''; }, 1000);
+    } else if (indicator) {
+      indicator.textContent = 'Guardado';
+      setTimeout(() => { if (indicator) indicator.textContent = ''; }, 1000);
     }
   }
 
   async function saveObservation(id, observation) {
-    const r = state.activeResponses.find(x => x.id === id);
-    if (r) r.observation = observation.trim() || null;
-    const ind = document.querySelector(`[data-save-for="${id}"]`);
-    if (ind) ind.textContent = 'Guardando…';
+    const response = state.activeResponses.find(x => x.id === id);
+    if (response) response.observation = observation.trim() || null;
+    const indicator = document.querySelector(`[data-save-for="${id}"]`);
+    if (state.editingCompleted) {
+      if (indicator) indicator.textContent = 'Cambio pendiente';
+      return;
+    }
+    if (indicator) indicator.textContent = 'Guardando…';
     const { error } = await client.from('audit_responses').update({ observation: observation.trim() || null }).eq('id', id);
     if (error) toast(error.message, 'danger');
-    else if (ind) { ind.textContent = 'Guardado'; setTimeout(() => { if (ind) ind.textContent = ''; }, 1000); }
+    else if (indicator) { indicator.textContent = 'Guardado'; setTimeout(() => { if (indicator) indicator.textContent = ''; }, 1000); }
   }
 
   async function saveGeneralNotes() {
     if (!state.activeAudit) return;
     const value = el('executionGeneralNotes').value.trim() || null;
     state.activeAudit.general_notes = value;
+    if (state.editingCompleted) return;
     const { error } = await client.from('audits').update({ general_notes: value }).eq('id', state.activeAudit.id);
     if (error) toast(error.message, 'danger');
   }
@@ -514,16 +670,24 @@
     const missing = state.activeResponses.filter(r => !r.answer);
     if (missing.length) {
       toast(`Faltan responder ${missing.length} ítems.`, 'warning');
-      const first = document.querySelector(`[data-response-id="${missing[0].id}"]`);
-      first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.querySelector(`[data-response-id="${missing[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const meta = collectExecutionMeta();
+    const traceMissing = validateVehicleTraceability(meta);
+    if (traceMissing.length) {
+      toast(`Completá la trazabilidad del vehículo: ${traceMissing.join(', ')}.`, 'warning');
+      el('editAuditMetaPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
     const calc = calculateAudit(state.activeResponses);
-    if (!confirm(`Resultado preliminar: ${calc.score.toFixed(1)}% · ${calc.classification}.\n\n¿Finalizar la auditoría? Después quedará bloqueada para preservar trazabilidad.`)) return;
+    if (!confirm(`Resultado preliminar: ${calc.score.toFixed(1)}% · ${calc.classification}.\n\n¿Finalizar la auditoría? Quedará registrada en el historial y podrá editarse posteriormente con trazabilidad de cambios.`)) return;
     loading(true);
     try {
+      await saveDraftMetadata();
       await saveGeneralNotes();
       const payload = {
+        ...meta,
         status: 'completed', completed_at: new Date().toISOString(), score: Number(calc.score.toFixed(2)),
         classification: calc.classification, critical_failures: calc.critical,
         applicable_items: calc.applicable, compliant_items: calc.compliant, noncompliant_items: calc.noncompliant,
@@ -535,23 +699,135 @@
       state.activeResponses = [];
       toast('Auditoría finalizada y registrada.', 'success');
       await openAudit(data.id);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo finalizar la auditoría.', 'danger'); }
     finally { loading(false); }
   }
 
   async function continueDraft(id) {
     loading(true);
     try {
-      const { data: audit, error } = await client.from('audits').select('*').eq('id', id).single();
+      const { data: audit, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').eq('id', id).single();
       if (error) throw error;
       if (audit.status !== 'draft') return openAudit(id);
-      const { data: responses, error: rError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
-      if (rError) throw rError;
+      const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
+      if (responseError) throw responseError;
       state.activeAudit = audit;
       state.activeResponses = responses;
+      state.editingCompleted = false;
       setView('newAudit', { load: false });
       showAuditExecution();
     } finally { loading(false); }
+  }
+
+  async function editCompletedAudit(id) {
+    loading(true);
+    try {
+      const { data: audit, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').eq('id', id).single();
+      if (error) throw error;
+      if (audit.status !== 'completed') return continueDraft(id);
+      const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
+      if (responseError) throw responseError;
+      state.activeAudit = audit;
+      state.activeResponses = responses;
+      state.editingCompleted = true;
+      setView('newAudit', { load: false });
+      showAuditExecution();
+    } catch (e) {
+      console.error(e);
+      toast(e?.message || 'No se pudo abrir la auditoría para editar.', 'danger');
+    } finally { loading(false); }
+  }
+
+  async function saveCompletedAuditEdit() {
+    if (!state.activeAudit || !state.editingCompleted) return;
+    const missing = state.activeResponses.filter(r => !r.answer);
+    if (missing.length) {
+      toast(`Faltan responder ${missing.length} ítems.`, 'warning');
+      document.querySelector(`[data-response-id="${missing[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const meta = collectExecutionMeta();
+    const traceMissing = validateVehicleTraceability(meta);
+    if (traceMissing.length) {
+      toast(`Completá la trazabilidad del vehículo: ${traceMissing.join(', ')}.`, 'warning');
+      return;
+    }
+    if (!confirm('¿Guardar los cambios de esta auditoría? La modificación quedará registrada en la trazabilidad.')) return;
+
+    loading(true);
+    try {
+      const params = {
+        p_audit_id: state.activeAudit.id,
+        p_audit_date: meta.audit_date,
+        p_responsible_name: meta.responsible_name,
+        p_operators_text: meta.operators_text,
+        p_vehicle_plate: meta.vehicle_plate,
+        p_vehicle_received_by: meta.vehicle_received_by,
+        p_vehicle_workers_text: meta.vehicle_workers_text,
+        p_vehicle_final_control_by: meta.vehicle_final_control_by,
+        p_general_notes: el('executionGeneralNotes').value.trim() || null,
+        p_responses: state.activeResponses.map(r => ({ id: r.id, answer: r.answer, observation: r.observation || null }))
+      };
+      const { error } = await client.rpc('update_completed_audit_v3', params);
+      if (error) throw error;
+      const id = state.activeAudit.id;
+      state.activeAudit = null;
+      state.activeResponses = [];
+      state.editingCompleted = false;
+      toast('Auditoría actualizada. El cambio quedó registrado.', 'success');
+      await openAudit(id);
+    } catch (e) {
+      console.error(e);
+      const hint = String(e?.message || '').includes('update_completed_audit_v3') ? ' Ejecutá supabase/migration_v3_audit_types_bulk.sql en Supabase.' : '';
+      toast(`${e?.message || 'No se pudieron guardar los cambios.'}${hint}`, 'danger');
+    } finally { loading(false); }
+  }
+
+  function openDeleteAuditModal(id) {
+    openDeleteAuditsModal([id]);
+  }
+
+  function openDeleteAuditsModal(ids) {
+    const unique = [...new Set((ids || []).filter(Boolean))];
+    if (!unique.length) {
+      toast('Seleccioná al menos una auditoría.', 'warning');
+      return;
+    }
+    state.deleteAuditIds = unique;
+    state.deleteAuditId = unique.length === 1 ? unique[0] : null;
+    const found = unique.map(id => state.history.find(a => a.id === id)).filter(Boolean);
+    const preview = found.slice(0, 5).map(a => `${fmtDate(a.audit_date)} · ${auditTypeLabel(a.audit_type)} · ${auditIdentity(a)}`);
+    const more = unique.length > 5 ? `<div class="mt-1">… y ${unique.length - 5} auditoría(s) más.</div>` : '';
+    el('deleteAuditSummary').innerHTML = `<strong>${unique.length} auditoría(s) seleccionada(s).</strong>${preview.length ? `<div class="mt-2">${preview.map(x => esc(x)).join('<br>')}</div>` : ''}${more}`;
+    el('deleteAuditConfirmInput').value = '';
+    el('confirmDeleteAuditBtn').disabled = true;
+    state.modals.deleteAudit.show();
+    setTimeout(() => el('deleteAuditConfirmInput').focus(), 250);
+  }
+
+  async function confirmDeleteAudit() {
+    const ids = state.deleteAuditIds;
+    if (!ids.length || el('deleteAuditConfirmInput').value.trim() !== 'ELIMINAR') return;
+    el('confirmDeleteAuditBtn').disabled = true;
+    el('confirmDeleteAuditBtn').textContent = 'Eliminando…';
+    try {
+      const { error } = await client.rpc('delete_audits_secure', { p_audit_ids: ids, p_confirmation: 'ELIMINAR' });
+      if (error) throw error;
+      state.modals.deleteAudit.hide();
+      ids.forEach(id => state.historySelected.delete(id));
+      state.history = state.history.filter(a => !ids.includes(a.id));
+      toast(`${ids.length} auditoría(s) eliminada(s) definitivamente. La acción quedó registrada.`, 'success');
+      if (state.currentView === 'auditDetail') setView('history');
+      else if (state.currentView === 'history') await loadHistory();
+      else await loadDashboard();
+    } catch (e) {
+      console.error(e);
+      const hint = String(e?.message || '').includes('delete_audits_secure') ? ' Ejecutá supabase/migration_v3_audit_types_bulk.sql en Supabase.' : '';
+      toast(`${e?.message || 'No se pudieron eliminar las auditorías.'}${hint}`, 'danger');
+    } finally {
+      el('confirmDeleteAuditBtn').textContent = 'Eliminar definitivamente';
+      el('confirmDeleteAuditBtn').disabled = el('deleteAuditConfirmInput').value.trim() !== 'ELIMINAR';
+    }
   }
 
   // ============================================================
@@ -560,42 +836,117 @@
   async function loadHistory() {
     loading(true);
     try {
-      const { data, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').order('audit_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000);
+      const [{ data: audits, error }, { data: activity, error: activityError }] = await Promise.all([
+        client.from('audits').select('*, auditor:profiles(full_name,email)').order('audit_date', { ascending: false }).order('created_at', { ascending: false }).limit(1000),
+        client.from('audit_activity_log').select('*').order('created_at', { ascending: false }).limit(100)
+      ]);
       if (error) throw error;
-      state.history = data;
+      if (activityError && !String(activityError.message || '').includes('audit_activity_log')) throw activityError;
+      state.history = audits || [];
+      state.activityLog = activity || [];
+      // Limpia selecciones que ya no existan o no sean visibles por RLS.
+      state.historySelected = new Set([...state.historySelected].filter(id => state.history.some(a => a.id === id)));
       renderHistory();
+      renderHistoryActivity();
     } catch (e) { console.error(e); }
     finally { loading(false); }
   }
 
-  function renderHistory() {
+  function getFilteredHistoryRows() {
     const from = el('historyFrom').value;
     const to = el('historyTo').value;
+    const type = el('historyType').value;
     const status = el('historyStatus').value;
     const search = el('historySearch').value.trim().toLowerCase();
-    const rows = state.history.filter(a => {
+    return state.history.filter(a => {
       if (from && a.audit_date < from) return false;
       if (to && a.audit_date > to) return false;
+      if (type && a.audit_type !== type) return false;
       if (status && a.status !== status) return false;
       if (search) {
-        const hay = `${a.vehicle_plate || ''} ${a.responsible_name || ''} ${a.auditor?.full_name || ''} ${a.auditor?.email || ''}`.toLowerCase();
-        if (!hay.includes(search)) return false;
+        const haystack = [
+          a.vehicle_plate, a.responsible_name, a.operators_text, a.vehicle_received_by,
+          a.vehicle_workers_text, a.vehicle_final_control_by, a.auditor?.full_name, a.auditor?.email,
+          auditTypeLabel(a.audit_type), auditIdentity(a)
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(search)) return false;
       }
       return true;
     });
+  }
+
+  function renderHistory() {
+    const rows = getFilteredHistoryRows();
     el('historyBody').innerHTML = rows.length ? rows.map(a => `<tr>
+      <td><input class="form-check-input history-row-check" type="checkbox" ${state.historySelected.has(a.id) ? 'checked' : ''} onchange="CleanItApp.toggleHistorySelection('${a.id}', this.checked)" aria-label="Seleccionar auditoría"></td>
       <td>${fmtDate(a.audit_date)}</td>
-      <td class="fw-semibold">${esc(a.vehicle_plate || '—')}</td>
-      <td>${esc(a.responsible_name || '—')}</td>
+      <td><span class="badge ${auditTypeBadgeClass(a.audit_type)}">${esc(auditTypeLabel(a.audit_type))}</span></td>
+      <td class="fw-semibold">${esc(auditIdentity(a))}</td>
+      <td><div class="small">${esc(auditPeopleSummary(a))}</div></td>
       <td>${esc(a.auditor?.full_name || a.auditor?.email || '—')}</td>
       <td>${a.status === 'completed' ? `<strong>${pct(a.score)}</strong>` : '—'}</td>
       <td><span class="badge ${a.status === 'completed' ? 'badge-soft-success' : 'badge-soft-neutral'}">${statusLabel(a.status)}</span></td>
       <td>${a.classification ? `<span class="badge ${classificationClass(a.classification)}">${esc(a.classification)}</span>` : '—'}</td>
-      <td class="text-end">${a.status === 'draft'
-        ? `<button class="btn btn-sm btn-dark" onclick="CleanItApp.continueDraft('${a.id}')">Continuar</button>`
-        : `<button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.openAudit('${a.id}')">Ver</button>`}
+      <td class="text-end">
+        <div class="d-inline-flex flex-wrap gap-1 justify-content-end">
+          ${a.status === 'draft'
+            ? `<button class="btn btn-sm btn-dark" onclick="CleanItApp.continueDraft('${a.id}')">Continuar</button>`
+            : `<button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.openAudit('${a.id}')">Ver</button><button class="btn btn-sm btn-outline-dark" onclick="CleanItApp.editCompletedAudit('${a.id}')">Editar</button>`}
+          <button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.openDeleteAuditModal('${a.id}')">Eliminar</button>
+        </div>
       </td>
-    </tr>`).join('') : `<tr><td colspan="8"><div class="empty-state">No hay auditorías para los filtros seleccionados.</div></td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="10"><div class="empty-state">No hay auditorías para los filtros seleccionados.</div></td></tr>`;
+
+    const allVisibleSelected = rows.length > 0 && rows.every(a => state.historySelected.has(a.id));
+    const someVisibleSelected = rows.some(a => state.historySelected.has(a.id));
+    const headerCheck = el('historySelectAllCheckbox');
+    headerCheck.checked = allVisibleSelected;
+    headerCheck.indeterminate = someVisibleSelected && !allVisibleSelected;
+    updateHistorySelectionBar();
+  }
+
+  function toggleHistorySelection(id, checked) {
+    if (checked) state.historySelected.add(id);
+    else state.historySelected.delete(id);
+    renderHistory();
+  }
+
+  function selectAllVisibleHistory(checked = true) {
+    const rows = getFilteredHistoryRows();
+    rows.forEach(a => checked ? state.historySelected.add(a.id) : state.historySelected.delete(a.id));
+    renderHistory();
+  }
+
+  function clearHistorySelection() {
+    state.historySelected.clear();
+    renderHistory();
+  }
+
+  function updateHistorySelectionBar() {
+    const count = state.historySelected.size;
+    el('selectedAuditCount').textContent = count;
+    el('historySelectionBar').classList.toggle('d-none', count === 0);
+    el('deleteSelectedAuditsBtn').disabled = count === 0;
+  }
+
+  function activityAuditLabel(log) {
+    const snapshot = log.old_snapshot?.audit || log.new_snapshot?.audit || null;
+    if (!snapshot) return `ID ${String(log.audit_id || '').slice(0, 8)}`;
+    return `${auditTypeLabel(snapshot.audit_type)} · ${auditIdentity(snapshot)} · ${fmtDate(snapshot.audit_date)}`;
+  }
+
+  function renderHistoryActivity() {
+    const body = el('historyActivityBody');
+    if (!state.activityLog.length) {
+      body.innerHTML = '<tr><td colspan="4"><div class="empty-state">Todavía no hay ediciones o eliminaciones registradas.</div></td></tr>';
+      return;
+    }
+    body.innerHTML = state.activityLog.map(log => `<tr>
+      <td>${fmtDateTime(log.created_at)}</td>
+      <td><span class="badge ${log.action === 'deleted' ? 'badge-soft-danger' : 'badge-soft-warning'}">${log.action === 'deleted' ? 'Eliminada' : 'Editada'}</span></td>
+      <td>${esc(activityAuditLabel(log))}</td>
+      <td>${esc(log.actor_name || log.actor_email || 'Usuario')}</td>
+    </tr>`).join('');
   }
 
   // ============================================================
@@ -606,15 +957,30 @@
     try {
       const { data: audit, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').eq('id', id).single();
       if (error) throw error;
-      const { data: responses, error: rError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
-      if (rError) throw rError;
+      const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
+      if (responseError) throw responseError;
+      const { data: activity, error: activityError } = await client.from('audit_activity_log').select('*').eq('audit_id', id).order('created_at', { ascending: false });
+      if (activityError && !String(activityError.message || '').includes('audit_activity_log')) throw activityError;
       setView('auditDetail', { load: false });
-      renderAuditDetail(audit, responses);
-    } catch (e) { console.error(e); }
+      renderAuditDetail(audit, responses, activity || []);
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo abrir la auditoría.', 'danger'); }
     finally { loading(false); }
   }
 
-  function renderAuditDetail(audit, responses) {
+  function auditOperationCard(audit) {
+    if (audit.audit_type === 'vehicle') {
+      return `<div class="mt-3"><strong>Patente:</strong> ${esc(audit.vehicle_plate || '—')}</div>
+        <div class="mt-1"><strong>Recibió:</strong> ${esc(audit.vehicle_received_by || '—')}</div>
+        <div class="mt-1"><strong>Trabajaron:</strong> ${esc(audit.vehicle_workers_text || '—')}</div>
+        <div class="mt-1"><strong>Control final:</strong> ${esc(audit.vehicle_final_control_by || '—')}</div>`;
+    }
+    if (audit.audit_type === 'local') {
+      return `<div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Personal presente:</strong> ${esc(audit.operators_text || '—')}</div>`;
+    }
+    return `<div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Operarios:</strong> ${esc(audit.operators_text || '—')}</div><div class="mt-1"><strong>Patente:</strong> ${esc(audit.vehicle_plate || '—')}</div>`;
+  }
+
+  function renderAuditDetail(audit, responses, activity = []) {
     const groups = groupResponses(responses);
     const container = el('auditDetailContainer');
     const completed = audit.status === 'completed';
@@ -622,23 +988,27 @@
       <div class="d-flex flex-wrap gap-2 justify-content-between align-items-start mb-4">
         <div>
           <button class="btn btn-link px-0 text-secondary text-decoration-none no-print" onclick="CleanItApp.goHistory()">← Volver al historial</button>
-          <h1 class="h3 mb-1">Auditoría ${esc(audit.vehicle_plate || 'sin patente')}</h1>
+          <div class="mb-2"><span class="badge ${auditTypeBadgeClass(audit.audit_type)}">${esc(auditTypeLabel(audit.audit_type))}</span></div>
+          <h1 class="h3 mb-1">${esc(auditIdentity(audit))}</h1>
           <div class="text-secondary">${fmtDate(audit.audit_date)} · ${esc(audit.auditor?.full_name || audit.auditor?.email || '—')}</div>
         </div>
-        <div class="d-flex gap-2 no-print">
-          ${completed ? `<button class="btn btn-dark" onclick="CleanItApp.downloadPdf('${audit.id}')">Descargar informe PDF</button>` : `<button class="btn btn-dark" onclick="CleanItApp.continueDraft('${audit.id}')">Continuar borrador</button>`}
+        <div class="d-flex flex-wrap gap-2 no-print">
+          ${completed
+            ? `<button class="btn btn-outline-dark" onclick="CleanItApp.editCompletedAudit('${audit.id}')">Editar auditoría</button><button class="btn btn-dark" onclick="CleanItApp.downloadPdf('${audit.id}')">Descargar informe PDF</button>`
+            : `<button class="btn btn-dark" onclick="CleanItApp.continueDraft('${audit.id}')">Continuar borrador</button>`}
+          <button class="btn btn-outline-danger" onclick="CleanItApp.openDeleteAuditModal('${audit.id}')">Eliminar</button>
         </div>
       </div>
 
       <div class="row g-3 mb-4">
         <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Puntaje</div><div class="score-big mt-2">${completed ? pct(audit.score) : '—'}</div><div class="mt-2">${audit.classification ? `<span class="badge ${classificationClass(audit.classification)}">${esc(audit.classification)}</span>` : '<span class="badge badge-soft-neutral">Borrador</span>'}</div></div></div>
         <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Control</div><div class="mt-3"><strong>${audit.compliant_items || 0}</strong> cumple · <strong>${audit.noncompliant_items || 0}</strong> no cumple</div><div class="mt-2"><strong>${audit.critical_failures || 0}</strong> fallas críticas</div></div></div>
-        <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Operación</div><div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Operarios:</strong> ${esc(audit.operators_text || '—')}</div></div></div>
+        <div class="col-md-4"><div class="audit-summary-card h-100"><div class="text-secondary small text-uppercase fw-bold">Trazabilidad operativa</div>${auditOperationCard(audit)}</div></div>
       </div>
 
-      ${groups.map(g => `<section class="audit-section">
-        <div class="audit-section-head"><h3 class="h6 mb-0">${esc(g.title)}</h3><div class="small text-secondary">${sectionScore(g.rows)}</div></div>
-        ${g.rows.map(r => `<div class="audit-item">
+      ${groups.map(group => `<section class="audit-section">
+        <div class="audit-section-head"><h3 class="h6 mb-0">${esc(group.title)}</h3><div class="small text-secondary">${sectionScore(group.rows)}</div></div>
+        ${group.rows.map(r => `<div class="audit-item">
           <div class="d-flex gap-3 align-items-start">
             <div class="audit-item-code">${esc(r.item_code_snapshot || '')}</div>
             <div class="flex-grow-1"><div class="d-flex flex-wrap gap-2"><span class="audit-item-title">${esc(r.item_title_snapshot)}</span>${r.is_critical_snapshot ? '<span class="critical-pill">Crítico</span>' : ''}</div><div class="audit-criterion">${esc(r.criterion_snapshot)}</div>${r.observation ? `<div class="mt-2 small"><strong>Observación:</strong> ${esc(r.observation)}</div>` : ''}</div>
@@ -647,17 +1017,22 @@
         </div>`).join('')}
       </section>`).join('')}
 
-      <div class="panel-card p-4 mt-3 mb-5"><h3 class="h6">Observaciones generales</h3><div class="text-secondary">${esc(audit.general_notes || 'Sin observaciones generales.')}</div><div class="small text-secondary mt-3">Inicio: ${fmtDateTime(audit.started_at)}${audit.completed_at ? ` · Cierre: ${fmtDateTime(audit.completed_at)}` : ''}</div></div>
+      <div class="panel-card p-4 mt-3"><h3 class="h6">Observaciones generales</h3><div class="text-secondary">${esc(audit.general_notes || 'Sin observaciones generales.')}</div><div class="small text-secondary mt-3">Inicio: ${fmtDateTime(audit.started_at)}${audit.completed_at ? ` · Cierre original: ${fmtDateTime(audit.completed_at)}` : ''} · Última actualización: ${fmtDateTime(audit.updated_at)}</div></div>
+
+      <div class="panel-card p-4 mt-3 mb-5">
+        <h3 class="h6 mb-3">Trazabilidad de cambios</h3>
+        ${activity.length ? `<div class="audit-timeline">${activity.map(log => `<div class="timeline-entry"><div class="timeline-dot"></div><div><div class="fw-semibold">${log.action === 'edited' ? 'Auditoría editada' : log.action === 'deleted' ? 'Auditoría eliminada' : esc(log.action)}</div><div class="small text-secondary">${fmtDateTime(log.created_at)} · ${esc(log.actor_name || log.actor_email || 'Usuario')}</div></div></div>`).join('')}</div>` : '<div class="text-secondary small">No hay ediciones posteriores registradas para esta auditoría.</div>'}
+      </div>
     `;
     container.dataset.audit = JSON.stringify(audit);
     container.dataset.responses = JSON.stringify(responses);
   }
 
   function sectionScore(rows) {
-    const app = rows.filter(r => r.answer && r.answer !== 'na');
-    if (!app.length) return 'Sin ítems aplicables';
-    const yes = app.filter(r => r.answer === 'complies').length;
-    return `${(yes / app.length * 100).toFixed(1)}%`;
+    const applicable = rows.filter(r => r.answer && r.answer !== 'na');
+    if (!applicable.length) return 'Sin ítems aplicables';
+    const yes = applicable.filter(r => r.answer === 'complies').length;
+    return `${(yes / applicable.length * 100).toFixed(1)}%`;
   }
   const answerText = a => a === 'complies' ? 'CUMPLE' : a === 'non_complies' ? 'NO CUMPLE' : a === 'na' ? 'N/A' : 'SIN RESPUESTA';
   const answerTextClass = a => a === 'complies' ? 'text-success' : a === 'non_complies' ? 'text-danger' : 'text-secondary';
@@ -667,8 +1042,8 @@
     try {
       const { data: audit, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').eq('id', id).single();
       if (error) throw error;
-      const { data: responses, error: rError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
-      if (rError) throw rError;
+      const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
+      if (responseError) throw responseError;
       makePdf(audit, responses);
     } catch (e) { console.error(e); }
     finally { loading(false); }
@@ -678,24 +1053,34 @@
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const margin = 14;
+    const typeLabel = auditTypeLabel(audit.audit_type);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text('CLEAN IT', margin, 16);
-    doc.setFontSize(13); doc.text('Informe de Auditoría Operativa · Naón', margin, 24);
+    doc.setFontSize(13); doc.text(`Informe de Auditoría · ${typeLabel}`, margin, 24);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
-    doc.text(`Fecha: ${fmtDate(audit.audit_date)}    Patente: ${audit.vehicle_plate || '—'}    Auditor: ${audit.auditor?.full_name || audit.auditor?.email || '—'}`, margin, 31);
-    doc.text(`Responsable: ${audit.responsible_name || '—'}`, margin, 36);
-    doc.text(`Operarios: ${audit.operators_text || '—'}`, margin, 41);
+    doc.text(`Fecha: ${fmtDate(audit.audit_date)}    Auditor: ${audit.auditor?.full_name || audit.auditor?.email || '—'}`, margin, 31);
+
+    let yMeta = 36;
+    if (audit.audit_type === 'vehicle') {
+      doc.text(`Patente: ${audit.vehicle_plate || '—'}    Recibió: ${audit.vehicle_received_by || '—'}`, margin, yMeta); yMeta += 5;
+      doc.text(`Trabajaron: ${audit.vehicle_workers_text || '—'}`, margin, yMeta); yMeta += 5;
+      doc.text(`Control final: ${audit.vehicle_final_control_by || '—'}`, margin, yMeta); yMeta += 5;
+    } else {
+      doc.text(`Responsable: ${audit.responsible_name || '—'}`, margin, yMeta); yMeta += 5;
+      doc.text(`Personal presente: ${audit.operators_text || '—'}`, margin, yMeta); yMeta += 5;
+      if (audit.audit_type === 'legacy' && audit.vehicle_plate) { doc.text(`Patente histórica: ${audit.vehicle_plate}`, margin, yMeta); yMeta += 5; }
+    }
 
     doc.autoTable({
-      startY: 47,
+      startY: yMeta + 1,
       head: [['Puntaje', 'Resultado', 'Cumple', 'No cumple', 'Fallas críticas']],
       body: [[pct(audit.score), audit.classification || '—', audit.compliant_items || 0, audit.noncompliant_items || 0, audit.critical_failures || 0]],
       theme: 'grid', styles: { fontSize: 9 }, headStyles: { fillColor: [17, 24, 39] }
     });
 
     groupResponses(responses).forEach(group => {
-      const start = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : 55;
+      const startY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : yMeta + 10;
       doc.autoTable({
-        startY: start,
+        startY,
         head: [[group.title, 'Criterio / evidencia', 'Resultado']],
         body: group.rows.map(r => [
           `${r.item_code_snapshot || ''} ${r.item_title_snapshot}${r.is_critical_snapshot ? ' [CRÍTICO]' : ''}`,
@@ -710,9 +1095,9 @@
       });
     });
 
-    const y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : 60;
+    const notesY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : yMeta + 20;
     doc.autoTable({
-      startY: y,
+      startY: notesY,
       head: [['Observaciones generales']],
       body: [[audit.general_notes || 'Sin observaciones generales.']],
       theme: 'grid', styles: { fontSize: 8 }, headStyles: { fillColor: [17, 24, 39] }, margin: { left: margin, right: margin }
@@ -723,8 +1108,9 @@
       doc.setPage(i); doc.setFontSize(7); doc.setTextColor(110);
       doc.text(`Clean It · Auditoría ${audit.id.slice(0,8)} · Página ${i}/${pages}`, margin, 292);
     }
-    const plate = (audit.vehicle_plate || 'SIN-PATENTE').replace(/[^a-z0-9-]/gi, '_');
-    doc.save(`Auditoria_CleanIt_${fmtDate(audit.audit_date).replaceAll('/','-')}_${plate}.pdf`);
+    const identity = audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'SIN-PATENTE') : audit.audit_type === 'local' ? 'LOCAL' : 'HISTORICA';
+    const safeIdentity = identity.replace(/[^a-z0-9-]/gi, '_');
+    doc.save(`Auditoria_CleanIt_${audit.audit_type || 'legacy'}_${fmtDate(audit.audit_date).replaceAll('/','-')}_${safeIdentity}.pdf`);
   }
 
   // ============================================================
@@ -734,17 +1120,22 @@
     loading(true);
     try {
       const checklist = await fetchChecklist(false);
-      el('checklistAdminContainer').innerHTML = checklist.map(s => `<section class="admin-section ${s.is_active ? '' : 'inactive-row'}">
-        <div class="admin-section-head">
-          <div><div class="d-flex gap-2 align-items-center"><strong>${esc(s.title)}</strong>${s.is_active ? '' : '<span class="badge badge-soft-neutral">Inactiva</span>'}</div><div class="small text-secondary">${esc(s.description || '')}</div></div>
-          <div class="admin-actions"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.editSection('${s.id}')">Editar</button><button class="btn btn-sm btn-dark" onclick="CleanItApp.addItem('${s.id}')">+ Ítem</button><button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.deleteSection('${s.id}')">Eliminar</button></div>
-        </div>
-        ${s.items.length ? s.items.map(i => `<div class="admin-item ${i.is_active ? '' : 'inactive-row'}">
-          <div class="fw-bold text-secondary">${esc(i.code || '')}</div>
-          <div><div class="d-flex flex-wrap gap-2 align-items-center"><strong>${esc(i.title)}</strong>${i.is_critical ? '<span class="critical-pill">Crítico</span>' : ''}${i.is_active ? '' : '<span class="badge badge-soft-neutral">Inactivo</span>'}</div><div class="small text-secondary mt-1">${esc(i.criterion)}</div></div>
-          <div class="admin-actions"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.editItem('${i.id}')">Editar</button><button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.deleteItem('${i.id}')">Eliminar</button></div>
-        </div>`).join('') : '<div class="p-3 text-secondary small">Sin ítems.</div>'}
-      </section>`).join('') || '<div class="empty-state">No hay secciones.</div>';
+      const renderType = (type) => {
+        const sections = checklist.filter(s => s.audit_type === type);
+        return `<div class="audit-type-heading"><div><h2 class="h5 mb-1">${auditTypeLabel(type)}</h2><div class="small text-secondary">${type === 'local' ? 'Secciones 1 a 4: estado general del local.' : 'Secciones 5 a 12: proceso y trazabilidad de cada vehículo.'}</div></div><span class="type-pill">${sections.length} secciones</span></div>
+          ${sections.length ? sections.map(s => `<section class="admin-section ${s.is_active ? '' : 'inactive-row'}">
+            <div class="admin-section-head">
+              <div><div class="d-flex gap-2 align-items-center"><strong>${esc(s.title)}</strong>${s.is_active ? '' : '<span class="badge badge-soft-neutral">Inactiva</span>'}</div><div class="small text-secondary">${esc(s.description || '')}</div></div>
+              <div class="admin-actions"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.editSection('${s.id}')">Editar</button><button class="btn btn-sm btn-dark" onclick="CleanItApp.addItem('${s.id}')">+ Ítem</button><button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.deleteSection('${s.id}')">Eliminar</button></div>
+            </div>
+            ${s.items.length ? s.items.map(i => `<div class="admin-item ${i.is_active ? '' : 'inactive-row'}">
+              <div class="fw-bold text-secondary">${esc(i.code || '')}</div>
+              <div><div class="d-flex flex-wrap gap-2 align-items-center"><strong>${esc(i.title)}</strong>${i.is_critical ? '<span class="critical-pill">Crítico</span>' : ''}${i.is_active ? '' : '<span class="badge badge-soft-neutral">Inactivo</span>'}</div><div class="small text-secondary mt-1">${esc(i.criterion)}</div></div>
+              <div class="admin-actions"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.editItem('${i.id}')">Editar</button><button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.deleteItem('${i.id}')">Eliminar</button></div>
+            </div>`).join('') : '<div class="p-3 text-secondary small">Sin ítems.</div>'}
+          </section>`).join('') : '<div class="panel-card p-4 text-secondary">No hay secciones para este tipo.</div>'}`;
+      };
+      el('checklistAdminContainer').innerHTML = renderType('local') + renderType('vehicle');
       state.activeChecklist = checklist;
     } catch (e) { console.error(e); }
     finally { loading(false); }
@@ -753,6 +1144,7 @@
   function openSectionModal(section = null) {
     el('sectionModalTitle').textContent = section ? 'Editar sección' : 'Nueva sección';
     el('sectionId').value = section?.id || '';
+    el('sectionAuditType').value = section?.audit_type || 'local';
     el('sectionTitle').value = section?.title || '';
     el('sectionDescription').value = section?.description || '';
     el('sectionOrder').value = section?.sort_order ?? 10;
@@ -761,21 +1153,24 @@
   }
 
   function editSection(id) {
-    const s = state.activeChecklist.find(x => x.id === id);
-    if (s) openSectionModal(s);
+    const section = state.activeChecklist.find(x => x.id === id);
+    if (section) openSectionModal(section);
   }
 
   async function saveSection(ev) {
     ev.preventDefault();
     const id = el('sectionId').value;
     const payload = {
-      title: el('sectionTitle').value.trim(), description: el('sectionDescription').value.trim() || null,
-      sort_order: Number(el('sectionOrder').value || 0), is_active: el('sectionActive').checked
+      audit_type: el('sectionAuditType').value,
+      title: el('sectionTitle').value.trim(),
+      description: el('sectionDescription').value.trim() || null,
+      sort_order: Number(el('sectionOrder').value || 0),
+      is_active: el('sectionActive').checked
     };
     loading(true);
     try {
-      const q = id ? client.from('audit_sections').update(payload).eq('id', id) : client.from('audit_sections').insert(payload);
-      const { error } = await q;
+      const query = id ? client.from('audit_sections').update(payload).eq('id', id) : client.from('audit_sections').insert(payload);
+      const { error } = await query;
       if (error) throw error;
       state.modals.section.hide(); toast('Sección guardada.', 'success'); await loadChecklistAdmin();
     } finally { loading(false); }
@@ -795,9 +1190,9 @@
   }
 
   function editItem(id) {
-    for (const s of state.activeChecklist) {
-      const i = s.items.find(x => x.id === id);
-      if (i) return openItemModal(s.id, i);
+    for (const section of state.activeChecklist) {
+      const item = section.items.find(x => x.id === id);
+      if (item) return openItemModal(section.id, item);
     }
   }
 
@@ -805,14 +1200,18 @@
     ev.preventDefault();
     const id = el('itemId').value;
     const payload = {
-      section_id: el('itemSectionId').value, code: el('itemCode').value.trim() || null,
-      title: el('itemTitle').value.trim(), criterion: el('itemCriterion').value.trim(),
-      sort_order: Number(el('itemOrder').value || 0), is_critical: el('itemCritical').checked, is_active: el('itemActive').checked
+      section_id: el('itemSectionId').value,
+      code: el('itemCode').value.trim() || null,
+      title: el('itemTitle').value.trim(),
+      criterion: el('itemCriterion').value.trim(),
+      sort_order: Number(el('itemOrder').value || 0),
+      is_critical: el('itemCritical').checked,
+      is_active: el('itemActive').checked
     };
     loading(true);
     try {
-      const q = id ? client.from('audit_items').update(payload).eq('id', id) : client.from('audit_items').insert(payload);
-      const { error } = await q;
+      const query = id ? client.from('audit_items').update(payload).eq('id', id) : client.from('audit_items').insert(payload);
+      const { error } = await query;
       if (error) throw error;
       state.modals.item.hide(); toast('Ítem guardado.', 'success'); await loadChecklistAdmin();
     } finally { loading(false); }
@@ -874,6 +1273,10 @@
   window.CleanItApp = {
     openAudit,
     continueDraft,
+    editCompletedAudit,
+    openDeleteAuditModal,
+    openDeleteAuditsModal,
+    toggleHistorySelection,
     downloadPdf,
     goHistory: () => setView('history'),
     editSection,

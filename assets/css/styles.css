@@ -98,3 +98,20 @@ button, input, select, textarea { box-shadow: none !important; }
   .main-column { margin: 0; }
   .content-wrap { max-width: none; padding: 0; }
 }
+
+/* Trazabilidad */
+.audit-timeline { display: grid; gap: 14px; }
+.timeline-entry { display: grid; grid-template-columns: 12px 1fr; gap: 12px; align-items: start; }
+.timeline-dot { width: 10px; height: 10px; border-radius: 50%; background: #111827; margin-top: 6px; }
+
+/* V3 · Tipos de auditoría y selección múltiple */
+.audit-type-card { display: flex; gap: 12px; align-items: flex-start; width: 100%; min-height: 88px; padding: 16px; border: 1px solid var(--ci-border); border-radius: 12px; background: #fff; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.audit-type-card:hover { border-color: #9ca3af; background: #fafafa; }
+.audit-type-card:has(input:checked) { border-color: #111827; background: #f8fafc; }
+.audit-type-card strong { display: block; margin-bottom: 2px; }
+.audit-type-card small { display: block; color: var(--ci-muted); line-height: 1.35; }
+.audit-type-card .form-check-input { margin-top: 3px; flex: 0 0 auto; }
+.selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #fecaca; background: #fff7f7; border-radius: 12px; }
+.audit-type-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 10px; }
+.audit-type-heading:first-child { margin-top: 0; }
+.type-pill { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: .73rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; background: #eef0f2; color: #374151; }

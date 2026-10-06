@@ -84,12 +84,23 @@
 
         <!-- DASHBOARD -->
         <section id="view-dashboard" class="app-view">
-          <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-4">
+          <div class="d-flex flex-wrap gap-3 justify-content-between align-items-end mb-4">
             <div>
               <h1 class="h3 mb-1">Panel de auditorías</h1>
               <p class="text-secondary mb-0" id="dashboardScope">Resultados consolidados.</p>
             </div>
-            <button class="btn btn-dark" data-nav="newAudit">+ Nueva auditoría</button>
+            <div class="d-flex flex-wrap gap-2 align-items-end">
+              <div>
+                <label for="dashboardTypeFilter" class="form-label small mb-1">Tipo de auditoría</label>
+                <select id="dashboardTypeFilter" class="form-select">
+                  <option value="">Todas</option>
+                  <option value="local">Estado del local</option>
+                  <option value="vehicle">Vehículo</option>
+                  <option value="legacy">Históricas (formato anterior)</option>
+                </select>
+              </div>
+              <button class="btn btn-dark" data-nav="newAudit">+ Nueva auditoría</button>
+            </div>
           </div>
 
           <div class="row g-3 mb-4">
@@ -121,7 +132,7 @@
             </div>
             <div class="table-responsive">
               <table class="table align-middle mb-0">
-                <thead><tr><th>Fecha</th><th>Vehículo</th><th>Auditor</th><th>Puntaje</th><th>Resultado</th><th></th></tr></thead>
+                <thead><tr><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Auditor</th><th>Puntaje</th><th>Resultado</th><th></th></tr></thead>
                 <tbody id="recentAuditsBody"></tbody>
               </table>
             </div>
@@ -136,10 +147,41 @@
             </div>
             <div class="panel-card p-4">
               <form id="auditStartForm" class="row g-3">
+                <div class="col-12">
+                  <label class="form-label fw-semibold">Tipo de auditoría</label>
+                  <div class="row g-2">
+                    <div class="col-md-6">
+                      <label class="audit-type-card">
+                        <input class="form-check-input" type="radio" name="auditType" value="local" checked>
+                        <span><strong>Estado del local</strong><small>Orden, preparación, máquinas y presentación del personal.</small></span>
+                      </label>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="audit-type-card">
+                        <input class="form-check-input" type="radio" name="auditType" value="vehicle">
+                        <span><strong>Vehículo</strong><small>Recepción, proceso completo, responsables y control final.</small></span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
                 <div class="col-md-4"><label class="form-label">Fecha</label><input id="auditDate" type="date" class="form-control" required></div>
-                <div class="col-md-4"><label class="form-label">Responsable operativo</label><input id="responsibleName" class="form-control" placeholder="Nombre y apellido"></div>
-                <div class="col-md-4"><label class="form-label">Patente / vehículo</label><input id="vehiclePlate" class="form-control text-uppercase" placeholder="Ej. AG123BC"></div>
-                <div class="col-12"><label class="form-label">Operarios presentes</label><input id="operatorsText" class="form-control" placeholder="Nombres separados por coma"></div>
+
+                <div id="startLocalFields" class="col-12">
+                  <div class="row g-3">
+                    <div class="col-md-4"><label class="form-label">Responsable operativo</label><input id="responsibleName" class="form-control" placeholder="Nombre y apellido"></div>
+                    <div class="col-md-8"><label class="form-label">Personal presente</label><input id="operatorsText" class="form-control" placeholder="Nombres separados por coma"></div>
+                  </div>
+                </div>
+
+                <div id="startVehicleFields" class="col-12 d-none">
+                  <div class="row g-3">
+                    <div class="col-md-3"><label class="form-label">Patente <span class="text-danger">*</span></label><input id="vehiclePlate" class="form-control text-uppercase" placeholder="Ej. AG123BC"></div>
+                    <div class="col-md-3"><label class="form-label">Recibió el vehículo</label><input id="vehicleReceivedBy" class="form-control" placeholder="Nombre y apellido"></div>
+                    <div class="col-md-3"><label class="form-label">Trabajaron en el vehículo</label><input id="vehicleWorkersText" class="form-control" placeholder="Nombres separados por coma"></div>
+                    <div class="col-md-3"><label class="form-label">Control final</label><input id="vehicleFinalControlBy" class="form-control" placeholder="Nombre y apellido"></div>
+                  </div>
+                </div>
+
                 <div class="col-12"><label class="form-label">Observaciones iniciales</label><textarea id="auditGeneralNotes" class="form-control" rows="2"></textarea></div>
                 <div class="col-12 d-flex justify-content-end"><button class="btn btn-dark btn-lg" type="submit">Iniciar auditoría</button></div>
               </form>
@@ -156,6 +198,33 @@
               <div class="progress-box">
                 <div class="d-flex justify-content-between small"><span>Avance</span><strong id="auditProgressText">0%</strong></div>
                 <div class="progress"><div id="auditProgressBar" class="progress-bar bg-dark" style="width:0%"></div></div>
+              </div>
+            </div>
+            <div id="editAuditMetaPanel" class="panel-card p-4 mb-3 d-none">
+              <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                <div>
+                  <h3 class="h6 mb-1">Datos de la auditoría</h3>
+                  <div id="editMetaHelp" class="small text-secondary">Podés completar o corregir estos datos durante la auditoría.</div>
+                </div>
+                <span id="editModeBadge" class="badge text-bg-warning">Modo edición</span>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-3"><label class="form-label">Fecha</label><input id="editAuditDate" type="date" class="form-control"></div>
+                <div class="col-md-3"><label class="form-label">Tipo</label><input id="editAuditTypeLabel" class="form-control" disabled></div>
+                <div id="editLocalFields" class="col-12">
+                  <div class="row g-3">
+                    <div class="col-md-4"><label class="form-label">Responsable operativo</label><input id="editResponsibleName" class="form-control"></div>
+                    <div class="col-md-8"><label class="form-label">Personal presente</label><input id="editOperatorsText" class="form-control"></div>
+                  </div>
+                </div>
+                <div id="editVehicleFields" class="col-12 d-none">
+                  <div class="row g-3">
+                    <div class="col-md-3"><label class="form-label">Patente</label><input id="editVehiclePlate" class="form-control text-uppercase"></div>
+                    <div class="col-md-3"><label class="form-label">Recibió el vehículo</label><input id="editVehicleReceivedBy" class="form-control"></div>
+                    <div class="col-md-3"><label class="form-label">Trabajaron en el vehículo</label><input id="editVehicleWorkersText" class="form-control"></div>
+                    <div class="col-md-3"><label class="form-label">Control final</label><input id="editVehicleFinalControlBy" class="form-control"></div>
+                  </div>
+                </div>
               </div>
             </div>
             <div id="auditChecklistContainer"></div>
@@ -177,18 +246,34 @@
           </div>
           <div class="panel-card p-3 mb-3">
             <div class="row g-2 align-items-end">
-              <div class="col-md-3"><label class="form-label small">Desde</label><input id="historyFrom" type="date" class="form-control"></div>
-              <div class="col-md-3"><label class="form-label small">Hasta</label><input id="historyTo" type="date" class="form-control"></div>
-              <div class="col-md-3"><label class="form-label small">Estado</label><select id="historyStatus" class="form-select"><option value="">Todos</option><option value="completed">Completadas</option><option value="draft">Borradores</option></select></div>
-              <div class="col-md-3"><label class="form-label small">Buscar</label><input id="historySearch" class="form-control" placeholder="Patente / responsable"></div>
+              <div class="col-md-2"><label class="form-label small">Desde</label><input id="historyFrom" type="date" class="form-control"></div>
+              <div class="col-md-2"><label class="form-label small">Hasta</label><input id="historyTo" type="date" class="form-control"></div>
+              <div class="col-md-2"><label class="form-label small">Tipo</label><select id="historyType" class="form-select"><option value="">Todos</option><option value="local">Estado del local</option><option value="vehicle">Vehículo</option><option value="legacy">Históricas</option></select></div>
+              <div class="col-md-2"><label class="form-label small">Estado</label><select id="historyStatus" class="form-select"><option value="">Todos</option><option value="completed">Completadas</option><option value="draft">Borradores</option></select></div>
+              <div class="col-md-4"><label class="form-label small">Buscar</label><input id="historySearch" class="form-control" placeholder="Patente / responsable / operario"></div>
+            </div>
+          </div>
+          <div id="historySelectionBar" class="selection-toolbar d-none mb-3">
+            <div><strong id="selectedAuditCount">0</strong> auditorías seleccionadas</div>
+            <div class="d-flex flex-wrap gap-2">
+              <button id="selectAllHistoryBtn" type="button" class="btn btn-sm btn-outline-secondary">Seleccionar todo</button>
+              <button id="clearHistorySelectionBtn" type="button" class="btn btn-sm btn-outline-secondary">Limpiar selección</button>
+              <button id="deleteSelectedAuditsBtn" type="button" class="btn btn-sm btn-danger">Eliminar seleccionadas</button>
             </div>
           </div>
           <div class="panel-card">
             <div class="table-responsive">
               <table class="table align-middle mb-0">
-                <thead><tr><th>Fecha</th><th>Patente</th><th>Responsable</th><th>Auditor</th><th>Puntaje</th><th>Estado</th><th>Resultado</th><th></th></tr></thead>
+                <thead><tr><th style="width:44px"><input id="historySelectAllCheckbox" class="form-check-input" type="checkbox" aria-label="Seleccionar todas"></th><th>Fecha</th><th>Tipo</th><th>Identificación</th><th>Responsables</th><th>Auditor</th><th>Puntaje</th><th>Estado</th><th>Resultado</th><th></th></tr></thead>
                 <tbody id="historyBody"></tbody>
               </table>
+            </div>
+          </div>
+
+          <div class="panel-card mt-4">
+            <div class="panel-card-header"><h3 class="h6 mb-0">Registro de cambios y eliminaciones</h3></div>
+            <div class="table-responsive">
+              <table class="table align-middle mb-0"><thead><tr><th>Fecha</th><th>Acción</th><th>Auditoría</th><th>Usuario</th></tr></thead><tbody id="historyActivityBody"></tbody></table>
             </div>
           </div>
         </section>
@@ -228,6 +313,7 @@
         <div class="modal-header"><h5 id="sectionModalTitle" class="modal-title">Sección</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
         <div class="modal-body">
           <input id="sectionId" type="hidden">
+          <div class="mb-3"><label class="form-label">Tipo de auditoría</label><select id="sectionAuditType" class="form-select" required><option value="local">Estado del local</option><option value="vehicle">Vehículo</option></select></div>
           <div class="mb-3"><label class="form-label">Título</label><input id="sectionTitle" class="form-control" required></div>
           <div class="mb-3"><label class="form-label">Descripción</label><textarea id="sectionDescription" class="form-control" rows="2"></textarea></div>
           <div class="row g-3"><div class="col-6"><label class="form-label">Orden</label><input id="sectionOrder" type="number" class="form-control" value="10"></div><div class="col-6 d-flex align-items-end"><div class="form-check form-switch mb-2"><input id="sectionActive" class="form-check-input" type="checkbox" checked><label class="form-check-label">Activa</label></div></div></div>
@@ -255,6 +341,28 @@
         </div>
         <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button type="submit" class="btn btn-dark">Guardar</button></div>
       </form>
+    </div></div>
+  </div>
+
+  <!-- DELETE AUDIT MODAL -->
+  <div class="modal fade" id="deleteAuditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Eliminar auditoría(s) definitivamente</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger mb-3">
+          Esta acción elimina definitivamente las auditorías seleccionadas y sus respuestas. La eliminación queda asentada en el registro de actividad. No se puede deshacer.
+        </div>
+        <div id="deleteAuditSummary" class="small text-secondary mb-3"></div>
+        <label for="deleteAuditConfirmInput" class="form-label">Para confirmar, escribí <strong>ELIMINAR</strong></label>
+        <input id="deleteAuditConfirmInput" class="form-control" autocomplete="off" placeholder="ELIMINAR">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button id="confirmDeleteAuditBtn" type="button" class="btn btn-danger" disabled>Eliminar definitivamente</button>
+      </div>
     </div></div>
   </div>
 

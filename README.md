@@ -1,23 +1,68 @@
-# Clean It · Auditorías Operativas Naón
+# Clean It · Auditorías Operativas Naón · V3
 
-Webapp estática para ejecutar, registrar y analizar auditorías operativas del galpón Naón.
+Webapp estática para ejecutar, registrar y analizar auditorías operativas de Clean It con Supabase.
+
+## Qué cambia en V3
+
+La operación queda separada en dos auditorías distintas:
+
+### 1. Auditoría de estado del local
+Incluye únicamente:
+
+1. Orden y limpieza del galpón
+2. Preparación para la operación
+3. Control de máquinas
+4. Presentación del personal
+
+Registra responsable operativo y personal presente.
+
+### 2. Auditoría de vehículo
+Incluye únicamente:
+
+5. Recepción del cliente y del vehículo
+6. Pertenencias y preparación del vehículo
+7. Aspirado y pretratamiento
+8. Lavado de tapizados
+9. Secado
+10. Plásticos, detalles y cristales
+11. Lavado exterior
+12. Control final y entrega
+
+Cada auditoría de vehículo registra:
+
+- patente;
+- quién recibió el vehículo;
+- quiénes trabajaron sobre el vehículo;
+- quién realizó el control final.
+
+La patente y los tres responsables operativos deben quedar completos antes de finalizar la auditoría.
+
+Las auditorías creadas antes de V3 se conservan como **Históricas (formato anterior)**. No se reinterpretan como local o vehículo porque originalmente contenían las 12 secciones.
 
 ## Funcionalidades
 
 - Login con Supabase Auth.
 - Roles `auditor` y `admin`.
-- Auditoría digital con respuestas **Cumple / No cumple / N/A**.
-- Guardado automático de cada respuesta.
+- Auditorías separadas por tipo: Local / Vehículo.
+- Respuestas **Cumple / No cumple / N/A**.
+- Guardado automático de respuestas y metadatos durante borradores.
 - Borradores recuperables.
 - Cálculo automático de puntaje y clasificación.
 - Regla de criticidad: cualquier incumplimiento crítico fuerza **No conforme**.
-- Historial y trazabilidad.
+- Historial con filtros por fecha, tipo, estado y búsqueda.
+- Selección individual mediante checkbox.
+- **Seleccionar todo** sobre los resultados visibles.
+- Eliminación individual o múltiple.
+- Eliminación segura: exige escribir exactamente `ELIMINAR`.
+- Edición posterior de auditorías finalizadas.
+- Bitácora visible de ediciones y eliminaciones.
 - Vista individual de cada auditoría.
-- Panel con KPIs y cumplimiento promedio por sección.
-- Descarga del informe individual en PDF.
-- Administración del checklist: crear, editar, activar/desactivar y eliminar secciones e ítems.
-- Administración de roles de usuarios existentes.
-- Snapshot histórico de preguntas: editar el checklist no altera auditorías ya realizadas.
+- Panel con filtro por tipo de auditoría.
+- Descarga de informe individual en PDF.
+- Administración del checklist separada por Local / Vehículo.
+- Crear, editar, activar/desactivar y eliminar secciones e ítems.
+- Administración de roles.
+- Snapshot histórico del checklist: los cambios futuros no alteran auditorías anteriores.
 
 ## Lógica de evaluación
 
@@ -28,7 +73,7 @@ Webapp estática para ejecutar, registrar y analizar auditorías operativas del 
 - 95–100% = **Conforme**.
 - 90–94,99% = **Conforme con observaciones**.
 - Menos de 90% = **No conforme**.
-- Si existe al menos un `No cumple` en un ítem crítico, el resultado final es **No conforme**, aunque el porcentaje sea superior a 90%.
+- Al menos un `No cumple` crítico = **No conforme**, independientemente del porcentaje.
 
 ## Stack
 
@@ -41,49 +86,61 @@ Webapp estática para ejecutar, registrar y analizar auditorías operativas del 
 - Chart.js
 - jsPDF + AutoTable
 
-No necesita Node, npm ni proceso de build. Se puede publicar directamente en GitHub Pages.
+No requiere Node, npm ni build. Puede publicarse directamente en GitHub Pages.
 
 ---
 
-# Instalación
+# Actualización desde tu versión actual V2
 
-## 1. Crear proyecto en Supabase
+## 1. Reemplazar los archivos de GitHub
 
-Crear un proyecto nuevo en Supabase.
+Reemplazá el contenido actual del repositorio por el contenido de esta carpeta y hacé commit/push a `main`.
 
-## 2. Crear la base de datos
+GitHub Pages volverá a desplegar automáticamente.
 
-Abrir:
+## 2. Ejecutar la migración V3 en Supabase
+
+En Supabase abrir:
 
 `SQL Editor → New query`
 
-Copiar y ejecutar todo el contenido de:
+Copiar y ejecutar completo:
+
+`supabase/migration_v3_audit_types_bulk.sql`
+
+**No vuelvas a ejecutar `migration_v2_edit_delete.sql` si ya la ejecutaste.**
+
+La migración V3:
+
+- agrega tipo de auditoría a secciones y auditorías;
+- asigna secciones 1–4 a `local`;
+- asigna secciones 5–12 a `vehicle`;
+- conserva auditorías previas como `legacy`;
+- agrega los tres responsables específicos del vehículo;
+- agrega edición V3 con trazabilidad;
+- agrega eliminación múltiple segura y atómica;
+- conserva en la bitácora metadata suficiente para identificar una auditoría eliminada.
+
+## 3. Supabase ya está configurado
+
+`assets/js/config.js` ya contiene la URL y Publishable Key provistas para este proyecto.
+
+No uses una `service_role` key en código cliente. La protección de datos se realiza con políticas RLS y funciones SQL con validación explícita de permisos.
+
+---
+
+# Instalación desde cero
+
+Si se trata de un proyecto Supabase nuevo, ejecutá solamente:
 
 `supabase/schema.sql`
 
-El script crea:
+Ese archivo ya incluye el esquema base y las migraciones V2 + V3.
 
-- perfiles y roles;
-- secciones e ítems del checklist;
-- auditorías;
-- respuestas históricas;
-- políticas RLS;
-- trigger de creación automática de perfiles;
-- checklist inicial de Naón.
+Después:
 
-## 3. Crear usuarios
-
-En Supabase:
-
-`Authentication → Users → Add user`
-
-Crear las cuentas de los auditores y administradores.
-
-Los usuarios nuevos ingresan por defecto con rol `auditor`.
-
-## 4. Definir el primer administrador
-
-Ejecutar en SQL Editor:
+1. Crear usuarios en `Authentication → Users`.
+2. Promover al primer administrador ejecutando `supabase/promote-admin.sql` o:
 
 ```sql
 update public.profiles
@@ -91,59 +148,8 @@ set role = 'admin'
 where email = 'tu-email@empresa.com';
 ```
 
-También se incluye el archivo `supabase/promote-admin.sql`.
-
-Una vez que exista un administrador, los demás roles se pueden modificar desde **Usuarios** dentro de la webapp.
-
-> Por seguridad, el administrador no puede quitarse su propio rol desde la interfaz.
-
-## 5. Configurar la conexión
-
-Abrir:
-
-`assets/js/config.js`
-
-Completar:
-
-```js
-window.CLEANIT_CONFIG = {
-  SUPABASE_URL: 'https://xxxxxxxx.supabase.co',
-  SUPABASE_KEY: 'TU_PUBLISHABLE_O_ANON_KEY'
-};
-```
-
-Los datos se encuentran en Supabase en la configuración/API del proyecto.
-
-**No usar jamás la `service_role` key en este archivo.** La Publishable/Anon Key está diseñada para uso cliente; la protección de datos se realiza con RLS.
-
-## 6. Probar localmente
-
-Por seguridad del navegador conviene servir los archivos por HTTP y no abrir `index.html` como `file://`.
-
-Con Python:
-
-```bash
-python -m http.server 8080
-```
-
-Abrir:
-
-`http://localhost:8080`
-
-## 7. Publicar en GitHub Pages
-
-1. Crear un repositorio en GitHub.
-2. Subir el contenido de esta carpeta a la raíz del repositorio.
-3. Ir a `Settings → Pages`.
-4. Seleccionar `Deploy from a branch`.
-5. Seleccionar la rama `main` y carpeta `/root`.
-6. Guardar.
-
-La aplicación no usa rutas del lado del servidor, por lo que funciona directamente con GitHub Pages.
-
-## 8. Configuración de Auth para producción
-
-En Supabase, agregar la URL definitiva de GitHub Pages dentro de la configuración de URLs permitidas de Authentication. Si las cuentas son creadas manualmente y se usa email/contraseña, no hace falta habilitar registro público desde la webapp.
+3. Subir los archivos a GitHub.
+4. Activar GitHub Pages desde `Settings → Pages → Deploy from a branch → main → /(root)`.
 
 ---
 
@@ -151,41 +157,36 @@ En Supabase, agregar la URL definitiva de GitHub Pages dentro de la configuraci�
 
 ## Auditor
 
-- Iniciar auditorías.
-- Guardar borradores.
-- Finalizar auditorías.
-- Ver sus propias auditorías.
-- Descargar sus informes.
-- Ver su propio dashboard.
+- Crear auditorías de local y vehículo.
+- Completar y recuperar borradores.
+- Ver sus auditorías.
+- Editar sus auditorías finalizadas.
+- Eliminar una o varias de sus auditorías con confirmación segura.
+- Consultar la trazabilidad disponible de sus registros.
+- Descargar informes PDF.
 
 ## Admin
 
-Incluye todo lo anterior y además:
+Incluye lo anterior y además:
 
 - Ver auditorías de todos los auditores.
-- Ver dashboard consolidado.
-- Crear, editar, activar/desactivar y eliminar preguntas.
-- Crear, editar, activar/desactivar y eliminar secciones.
+- Editar cualquier auditoría finalizada.
+- Eliminar una o varias auditorías de cualquier auditor.
+- Ver el panel consolidado.
+- Administrar secciones e ítems de cada tipo de auditoría.
 - Cambiar roles de otros usuarios.
 
-La separación de acceso está implementada en Supabase mediante **Row Level Security**, no solamente ocultando botones en la interfaz.
+La autorización efectiva se controla en Supabase mediante RLS y RPC seguras, no sólo mediante la interfaz.
 
 ---
 
 # Trazabilidad
 
-Al iniciar una auditoría, la app copia a `audit_responses` una fotografía de:
+Cada auditoría guarda una copia del texto de las preguntas, criterios, criticidad y orden utilizados en el momento de ejecución. Si el checklist maestro cambia más adelante, el histórico sigue mostrando el estándar que efectivamente se auditó.
 
-- sección;
-- código de ítem;
-- nombre del punto de control;
-- criterio objetivo;
-- criticidad;
-- orden.
+Cuando una auditoría finalizada se edita, Supabase guarda una entrada en `audit_activity_log` con la versión anterior y posterior y recalcula puntaje, clasificación y fallas críticas.
 
-Por eso, si en el futuro un administrador cambia o elimina una pregunta, los informes históricos mantienen exactamente la versión que fue auditada en ese momento.
-
-Las auditorías finalizadas no pueden editarse desde la aplicación. Esta decisión es deliberada para preservar integridad del historial.
+Cuando una o varias auditorías se eliminan, se exige escribir **ELIMINAR**. La auditoría y sus respuestas desaparecen del historial operativo, pero `audit_activity_log` conserva quién realizó la eliminación, cuándo y metadata identificatoria del registro eliminado. Las respuestas eliminadas no se conservan.
 
 ---
 
@@ -204,9 +205,11 @@ cleanit-auditorias/
 │       └── app.js
 └── supabase/
     ├── schema.sql
+    ├── migration_v2_edit_delete.sql
+    ├── migration_v3_audit_types_bulk.sql
     └── promote-admin.sql
 ```
 
-## Nota operativa
+## Recomendación de gobernanza
 
-Para “sacar” una pregunta del checklist sin perderla como referencia administrativa, es preferible marcarla **Inactiva** antes que eliminarla. La eliminación también es segura para el historial porque las auditorías guardan snapshots, pero desactivar deja más clara la gobernanza del estándar vigente.
+Si una pregunta deja de utilizarse, es preferible marcarla como **Inactiva** antes que eliminarla. Así se mantiene visible como parte del estándar histórico de gestión sin aparecer en auditorías nuevas.
