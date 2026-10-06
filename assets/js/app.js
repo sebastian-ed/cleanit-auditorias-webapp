@@ -21,6 +21,7 @@
     history: [],
     activityLog: [],
     dashboardAudits: [],
+    staffMembers: [],
     charts: { classification: null, sections: null },
     modals: {}
   };
@@ -78,12 +79,18 @@
       ? `<span class="badge badge-soft-success">Checklist completo · ${c.answered}/${c.total}</span>`
       : `<span class="badge badge-soft-warning">Incompleta · ${c.unanswered} pendiente${c.unanswered === 1 ? '' : 's'}</span>`;
   };
-  const auditTypeLabel = type => type === 'local' ? 'Estado del local' : type === 'vehicle' ? 'Vehículo' : 'Histórica';
-  const auditTypeBadgeClass = type => type === 'vehicle' ? 'badge-soft-warning' : type === 'local' ? 'badge-soft-success' : 'badge-soft-neutral';
-  const auditIdentity = audit => audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'Sin patente') : audit.audit_type === 'local' ? 'Estado general del local' : (audit.vehicle_plate || 'Auditoría histórica');
+  const auditTypeLabel = type => type === 'local' ? 'Estado del local' : type === 'personnel' ? 'Presentación del personal' : type === 'vehicle' ? 'Vehículo' : 'Histórica';
+  const auditTypeBadgeClass = type => type === 'vehicle' ? 'badge-soft-warning' : type === 'personnel' ? 'badge-soft-info' : type === 'local' ? 'badge-soft-success' : 'badge-soft-neutral';
+  const auditIdentity = audit => audit.audit_type === 'vehicle'
+    ? (audit.vehicle_plate || 'Sin patente')
+    : audit.audit_type === 'personnel'
+      ? (audit.staff_member_name_snapshot || 'Operario sin identificar')
+      : audit.audit_type === 'local' ? 'Estado general del local' : (audit.vehicle_plate || 'Auditoría histórica');
   const auditPeopleSummary = audit => audit.audit_type === 'vehicle'
     ? [audit.vehicle_received_by ? `Recibió: ${audit.vehicle_received_by}` : '', audit.vehicle_workers_text ? `Equipo: ${audit.vehicle_workers_text}` : '', audit.vehicle_final_control_by ? `Control: ${audit.vehicle_final_control_by}` : ''].filter(Boolean).join(' · ') || '—'
-    : [audit.responsible_name ? `Responsable: ${audit.responsible_name}` : '', audit.operators_text ? `Personal: ${audit.operators_text}` : ''].filter(Boolean).join(' · ') || '—';
+    : audit.audit_type === 'personnel'
+      ? (audit.staff_member_name_snapshot ? `Operario: ${audit.staff_member_name_snapshot}` : '—')
+      : [audit.responsible_name ? `Responsable: ${audit.responsible_name}` : '', audit.operators_text ? `Presentes: ${audit.operators_text}` : ''].filter(Boolean).join(' · ') || '—';
 
   const classificationClass = (c) => {
     if (c === 'Conforme') return 'badge-soft-success';
@@ -124,7 +131,7 @@
   }
 
   function setView(name, { load = true } = {}) {
-    if ((name === 'checklistAdmin' || name === 'usersAdmin') && state.profile?.role !== 'admin') name = 'dashboard';
+    if ((name === 'checklistAdmin' || name === 'staffAdmin' || name === 'usersAdmin') && state.profile?.role !== 'admin') name = 'dashboard';
     state.currentView = name;
     $$('.app-view').forEach(v => v.classList.add('d-none'));
     el(`view-${name}`)?.classList.remove('d-none');
@@ -136,6 +143,7 @@
       newAudit: ['Nueva auditoría', 'Registro digital y guardado automático.'],
       history: ['Historial', 'Trazabilidad y consulta de resultados.'],
       checklistAdmin: ['Checklist', 'Administración de secciones e ítems.'],
+      staffAdmin: ['Operarios', 'Maestro de operarios para presencia y auditorías individuales.'],
       usersAdmin: ['Usuarios', 'Roles de acceso.'],
       auditDetail: ['Detalle de auditoría', 'Resultado, evidencia y descarga.']
     };
@@ -147,8 +155,9 @@
     if (name === 'dashboard') loadDashboard();
     if (name === 'history') loadHistory();
     if (name === 'checklistAdmin') loadChecklistAdmin();
+    if (name === 'staffAdmin') loadStaffAdmin();
     if (name === 'usersAdmin') loadUsersAdmin();
-    if (name === 'newAudit' && !state.activeAudit) resetNewAuditView();
+    if (name === 'newAudit' && !state.activeAudit) prepareNewAuditStart();
   }
 
   async function init() {
@@ -206,7 +215,7 @@
       setView('history');
     });
     el('executionGeneralNotes').addEventListener('change', saveGeneralNotes);
-    ['editAuditDate','editResponsibleName','editOperatorsText','editVehiclePlate','editVehicleReceivedBy','editVehicleWorkersText','editVehicleFinalControlBy'].forEach(id => {
+    ['editAuditDate','editResponsibleName','editStaffMember','editVehiclePlate','editVehicleReceivedBy','editVehicleWorkersText','editVehicleFinalControlBy'].forEach(id => {
       el(id)?.addEventListener('change', saveDraftMetadata);
     });
 
@@ -232,11 +241,16 @@
     el('selectAllHistoryBtn').addEventListener('click', () => selectAllVisibleHistory(true));
     el('clearHistorySelectionBtn').addEventListener('click', clearHistorySelection);
     el('deleteSelectedAuditsBtn').addEventListener('click', () => openDeleteAuditsModal([...state.historySelected]));
-    el('dashboardTypeFilter').addEventListener('change', renderDashboard);
+    el('dashboardTypeFilter').addEventListener('change', () => {
+      if (el('dashboardTypeFilter').value !== 'personnel') el('dashboardStaffFilter').value = '';
+      renderDashboard();
+    });
+    el('dashboardStaffFilter').addEventListener('change', renderDashboard);
 
     el('addSectionBtn').addEventListener('click', () => openSectionModal());
     el('sectionForm').addEventListener('submit', saveSection);
     el('itemForm').addEventListener('submit', saveItem);
+    el('staffAddForm').addEventListener('submit', addStaffMember);
   }
 
   function showLogin() {
@@ -301,7 +315,7 @@
   async function fetchChecklist(activeOnly = true, auditType = null) {
     let sectionQuery = client.from('audit_sections').select('*').order('sort_order');
     if (activeOnly) sectionQuery = sectionQuery.eq('is_active', true);
-    if (auditType && ['local','vehicle'].includes(auditType)) sectionQuery = sectionQuery.eq('audit_type', auditType);
+    if (auditType && ['local','personnel','vehicle'].includes(auditType)) sectionQuery = sectionQuery.eq('audit_type', auditType);
     const { data: sections, error: sectionError } = await sectionQuery;
     if (sectionError) throw sectionError;
 
@@ -311,6 +325,53 @@
     if (itemError) throw itemError;
 
     return sections.map(section => ({ ...section, items: items.filter(item => item.section_id === section.id) }));
+  }
+
+  async function loadStaffMembers(includeInactive = false) {
+    let query = client.from('staff_members').select('*').order('full_name');
+    if (!includeInactive) query = query.eq('is_active', true);
+    const { data, error } = await query;
+    if (error) {
+      const hint = String(error.message || '').includes('staff_members') ? ' Ejecutá supabase/migration_v5_three_audit_types_staff.sql en Supabase.' : '';
+      throw new Error(`${error.message || 'No se pudo cargar el maestro de operarios.'}${hint}`);
+    }
+    state.staffMembers = data || [];
+    return state.staffMembers;
+  }
+
+  function renderStaffChecks(containerId, selectedIds = [], className = '') {
+    const node = el(containerId);
+    if (!node) return;
+    const selected = new Set((selectedIds || []).map(String));
+    if (!state.staffMembers.length) {
+      node.innerHTML = '<div class="staff-empty">No hay operarios activos cargados. Un administrador debe agregarlos desde <strong>Operarios</strong>.</div>';
+      return;
+    }
+    node.innerHTML = state.staffMembers.map(staff => `<label class="staff-check"><input class="form-check-input ${className}" type="checkbox" value="${staff.id}" ${selected.has(String(staff.id)) ? 'checked' : ''}><span>${esc(staff.full_name)}${staff.is_active ? '' : ' <small class="text-secondary">(inactivo)</small>'}</span></label>`).join('');
+  }
+
+  function renderStaffSelect(selectId, selectedId = '') {
+    const node = el(selectId);
+    if (!node) return;
+    const current = selectedId || node.value || '';
+    node.innerHTML = '<option value="">Seleccionar operario…</option>' + state.staffMembers.map(staff => `<option value="${staff.id}" ${String(staff.id) === String(current) ? 'selected' : ''}>${esc(staff.full_name)}</option>`).join('');
+  }
+
+  function selectedStaffFrom(selector) {
+    const ids = $$(selector).filter(x => x.checked).map(x => x.value);
+    const members = ids.map(id => state.staffMembers.find(s => String(s.id) === String(id))).filter(Boolean);
+    return { ids, names: members.map(x => x.full_name) };
+  }
+
+  async function prepareNewAuditStart() {
+    try {
+      await loadStaffMembers(false);
+      resetNewAuditView();
+    } catch (e) {
+      console.error(e);
+      toast(e.message || 'No se pudieron cargar los operarios.', 'danger');
+      resetNewAuditView();
+    }
   }
 
   // ============================================================
@@ -334,7 +395,17 @@
 
   async function renderDashboard() {
     const type = el('dashboardTypeFilter')?.value || '';
-    const audits = state.dashboardAudits.filter(a => !type || a.audit_type === type);
+    const staffFilter = el('dashboardStaffFilter')?.value || '';
+    const staffWrap = el('dashboardStaffFilterWrap');
+    staffWrap?.classList.toggle('d-none', type !== 'personnel');
+    const personnelNames = [...new Set(state.dashboardAudits.filter(a => a.audit_type === 'personnel' && a.staff_member_name_snapshot).map(a => a.staff_member_name_snapshot))].sort((a,b) => a.localeCompare(b, 'es'));
+    const staffSelect = el('dashboardStaffFilter');
+    if (staffSelect) {
+      const keep = staffSelect.value;
+      staffSelect.innerHTML = '<option value="">Todos</option>' + personnelNames.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+      if (personnelNames.includes(keep)) staffSelect.value = keep;
+    }
+    const audits = state.dashboardAudits.filter(a => (!type || a.audit_type === type) && (!staffFilter || a.staff_member_name_snapshot === staffFilter));
     const total = audits.length;
     const scored = audits.filter(x => x.score !== null && x.score !== undefined && x.score !== '');
     const avg = scored.length ? scored.reduce((sum, x) => sum + Number(x.score), 0) / scored.length : null;
@@ -347,7 +418,7 @@
     el('kpiCritical').textContent = critical;
     el('kpiIncomplete').textContent = incomplete;
     const base = state.profile.role === 'admin' ? 'Resultados consolidados de todos los auditores.' : 'Resultados de tus auditorías.';
-    el('dashboardScope').textContent = `${base} ${type ? `Filtro: ${auditTypeLabel(type)}.` : 'Podés filtrar por tipo de auditoría.'}`;
+    el('dashboardScope').textContent = `${base} ${type ? `Filtro: ${auditTypeLabel(type)}${staffFilter ? ` · ${staffFilter}` : ''}.` : 'Podés filtrar por tipo de auditoría.'}`;
 
     renderRecentAudits(audits.slice(0, 7));
     renderClassificationChart(audits);
@@ -429,8 +500,11 @@
   function toggleAuditStartFields() {
     const type = document.querySelector('input[name="auditType"]:checked')?.value || 'local';
     el('startLocalFields').classList.toggle('d-none', type !== 'local');
+    el('startPersonnelFields').classList.toggle('d-none', type !== 'personnel');
     el('startVehicleFields').classList.toggle('d-none', type !== 'vehicle');
     el('vehiclePlate').required = type === 'vehicle';
+    if (type === 'local') renderStaffChecks('startPresentStaffList', [], 'start-staff-check');
+    if (type === 'personnel') renderStaffSelect('personnelStaffMember');
   }
 
   function resetNewAuditView() {
@@ -450,8 +524,15 @@
     loading(true);
     try {
       const auditType = document.querySelector('input[name="auditType"]:checked')?.value || 'local';
-      if (!['local','vehicle'].includes(auditType)) throw new Error('Seleccioná un tipo de auditoría válido.');
+      if (!['local','personnel','vehicle'].includes(auditType)) throw new Error('Seleccioná un tipo de auditoría válido.');
       if (auditType === 'vehicle' && !el('vehiclePlate').value.trim()) throw new Error('La patente es obligatoria para una auditoría de vehículo.');
+
+      if (!state.staffMembers.length && auditType !== 'vehicle') await loadStaffMembers(false);
+      const localStaff = selectedStaffFrom('.start-staff-check');
+      const personnelId = el('personnelStaffMember')?.value || '';
+      const personnel = state.staffMembers.find(x => String(x.id) === String(personnelId));
+      if (auditType === 'local' && !localStaff.ids.length) throw new Error('Marcá al menos un operario presente en el local.');
+      if (auditType === 'personnel' && !personnel) throw new Error('Seleccioná el operario que vas a auditar.');
 
       const checklist = await fetchChecklist(true, auditType);
       const activeItems = checklist.flatMap(section => section.items);
@@ -463,7 +544,10 @@
         auditor_id: state.profile.id,
         audit_type: auditType,
         responsible_name: auditType === 'local' ? (el('responsibleName').value.trim() || null) : null,
-        operators_text: auditType === 'local' ? (el('operatorsText').value.trim() || null) : null,
+        operators_text: auditType === 'local' ? localStaff.names.join(', ') : null,
+        present_staff_ids: auditType === 'local' ? localStaff.ids : [],
+        staff_member_id: auditType === 'personnel' ? personnel.id : null,
+        staff_member_name_snapshot: auditType === 'personnel' ? personnel.full_name : null,
         vehicle_plate: auditType === 'vehicle' ? (el('vehiclePlate').value.trim().toUpperCase() || null) : null,
         vehicle_received_by: auditType === 'vehicle' ? (el('vehicleReceivedBy').value.trim() || null) : null,
         vehicle_workers_text: auditType === 'vehicle' ? (el('vehicleWorkersText').value.trim() || null) : null,
@@ -476,18 +560,10 @@
 
       const snapshots = [];
       checklist.forEach(section => section.items.forEach(item => snapshots.push({
-        audit_id: audit.id,
-        section_id: section.id,
-        item_id: item.id,
-        section_title_snapshot: section.title,
-        section_order_snapshot: section.sort_order,
-        item_code_snapshot: item.code,
-        item_title_snapshot: item.title,
-        criterion_snapshot: item.criterion,
-        is_critical_snapshot: item.is_critical,
-        item_order_snapshot: item.sort_order,
-        answer: null,
-        observation: null
+        audit_id: audit.id, section_id: section.id, item_id: item.id,
+        section_title_snapshot: section.title, section_order_snapshot: section.sort_order, item_code_snapshot: item.code,
+        item_title_snapshot: item.title, criterion_snapshot: item.criterion, is_critical_snapshot: item.is_critical,
+        item_order_snapshot: item.sort_order, answer: null, observation: null
       })));
       const { data: responses, error: responseError } = await client.from('audit_responses').insert(snapshots).select();
       if (responseError) throw responseError;
@@ -497,8 +573,12 @@
       state.activeChecklist = checklist;
       showAuditExecution();
       toast('Auditoría iniciada. Las respuestas se guardan automáticamente.', 'success');
-    } catch (e) { console.error(e); toast(e?.message || 'No se pudo iniciar la auditoría.', 'danger'); }
-    finally { loading(false); }
+    } catch (e) {
+      console.error(e);
+      const hint = String(e?.message || '').includes('audit_type') || String(e?.message || '').includes('staff_member') || String(e?.message || '').includes('present_staff')
+        ? ' Ejecutá supabase/migration_v5_three_audit_types_staff.sql en Supabase.' : '';
+      toast(`${e?.message || 'No se pudo iniciar la auditoría.'}${hint}`, 'danger');
+    } finally { loading(false); }
   }
 
   function groupResponses(responses) {
@@ -522,6 +602,7 @@
 
     const title = type === 'vehicle'
       ? `Vehículo ${audit.vehicle_plate || 'sin patente'}`
+      : type === 'personnel' ? `Presentación · ${audit.staff_member_name_snapshot || 'operario'}`
       : type === 'local' ? 'Estado general del local' : (audit.vehicle_plate ? `Auditoría histórica · ${audit.vehicle_plate}` : 'Auditoría histórica');
     el('activeAuditTitle').textContent = editing ? `Editando · ${title}` : title;
     el('activeAuditMeta').textContent = `${auditTypeLabel(type)} · ${fmtDate(audit.audit_date)} · Auditor: ${audit.auditor?.full_name || audit.auditor?.email || state.profile.full_name || state.profile.email}${editing ? ' · Edición registrada' : ''}`;
@@ -533,13 +614,16 @@
     el('editAuditDate').value = audit.audit_date || todayISO();
     el('editAuditTypeLabel').value = auditTypeLabel(type);
     el('editResponsibleName').value = audit.responsible_name || '';
-    el('editOperatorsText').value = audit.operators_text || '';
+    renderStaffChecks('editPresentStaffList', audit.present_staff_ids || [], 'edit-staff-check');
+    renderStaffSelect('editStaffMember', audit.staff_member_id || '');
     el('editVehiclePlate').value = audit.vehicle_plate || '';
     el('editVehicleReceivedBy').value = audit.vehicle_received_by || '';
     el('editVehicleWorkersText').value = audit.vehicle_workers_text || '';
     el('editVehicleFinalControlBy').value = audit.vehicle_final_control_by || '';
-    el('editLocalFields').classList.toggle('d-none', type === 'vehicle');
-    el('editVehicleFields').classList.toggle('d-none', type === 'local');
+    el('editLocalFields').classList.toggle('d-none', type !== 'local');
+    el('editPersonnelFields').classList.toggle('d-none', type !== 'personnel');
+    el('editVehicleFields').classList.toggle('d-none', type !== 'vehicle');
+    $$('.edit-staff-check').forEach(ch => ch.addEventListener('change', saveDraftMetadata));
 
     const badge = el('editModeBadge');
     if (badge) {
@@ -563,15 +647,28 @@
 
   function collectExecutionMeta() {
     const type = state.activeAudit?.audit_type || 'legacy';
+    const localStaff = selectedStaffFrom('.edit-staff-check');
+    const personnelId = el('editStaffMember')?.value || state.activeAudit?.staff_member_id || '';
+    const personnel = state.staffMembers.find(x => String(x.id) === String(personnelId));
     return {
       audit_date: el('editAuditDate').value || state.activeAudit?.audit_date || todayISO(),
-      responsible_name: type === 'vehicle' ? null : (el('editResponsibleName').value.trim() || null),
-      operators_text: type === 'vehicle' ? null : (el('editOperatorsText').value.trim() || null),
-      vehicle_plate: type === 'local' ? null : (el('editVehiclePlate').value.trim().toUpperCase() || null),
-      vehicle_received_by: type === 'vehicle' ? (el('editVehicleReceivedBy').value.trim() || null) : null,
-      vehicle_workers_text: type === 'vehicle' ? (el('editVehicleWorkersText').value.trim() || null) : null,
-      vehicle_final_control_by: type === 'vehicle' ? (el('editVehicleFinalControlBy').value.trim() || null) : null
+      responsible_name: type === 'local' ? (el('editResponsibleName').value.trim() || null) : type === 'legacy' ? (state.activeAudit?.responsible_name || null) : null,
+      operators_text: type === 'local' ? localStaff.names.join(', ') : type === 'legacy' ? (state.activeAudit?.operators_text || null) : null,
+      present_staff_ids: type === 'local' ? localStaff.ids : type === 'legacy' ? (state.activeAudit?.present_staff_ids || []) : [],
+      staff_member_id: type === 'personnel' ? (personnel?.id || personnelId || null) : type === 'legacy' ? (state.activeAudit?.staff_member_id || null) : null,
+      staff_member_name_snapshot: type === 'personnel' ? (personnel?.full_name || state.activeAudit?.staff_member_name_snapshot || null) : type === 'legacy' ? (state.activeAudit?.staff_member_name_snapshot || null) : null,
+      vehicle_plate: type === 'vehicle' ? (el('editVehiclePlate').value.trim().toUpperCase() || null) : type === 'legacy' ? (state.activeAudit?.vehicle_plate || null) : null,
+      vehicle_received_by: type === 'vehicle' ? (el('editVehicleReceivedBy').value.trim() || null) : type === 'legacy' ? (state.activeAudit?.vehicle_received_by || null) : null,
+      vehicle_workers_text: type === 'vehicle' ? (el('editVehicleWorkersText').value.trim() || null) : type === 'legacy' ? (state.activeAudit?.vehicle_workers_text || null) : null,
+      vehicle_final_control_by: type === 'vehicle' ? (el('editVehicleFinalControlBy').value.trim() || null) : type === 'legacy' ? (state.activeAudit?.vehicle_final_control_by || null) : null
     };
+  }
+
+  function validateAuditIdentity(meta) {
+    const type = state.activeAudit?.audit_type;
+    if (type === 'local' && !(meta.present_staff_ids || []).length) return ['al menos un operario presente'];
+    if (type === 'personnel' && !meta.staff_member_id) return ['operario auditado'];
+    return [];
   }
 
   function validateVehicleTraceability(meta) {
@@ -701,6 +798,12 @@
 
   async function finalizeAudit() {
     const meta = collectExecutionMeta();
+    const identityMissing = validateAuditIdentity(meta);
+    if (identityMissing.length) {
+      toast(`Completá los datos requeridos: ${identityMissing.join(', ')}.`, 'warning');
+      el('editAuditMetaPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const traceMissing = validateVehicleTraceability(meta);
     if (traceMissing.length) {
       toast(`Completá la trazabilidad del vehículo: ${traceMissing.join(', ')}.`, 'warning');
@@ -737,7 +840,7 @@
       console.error(e);
       const msg = String(e?.message || '');
       const hint = (msg.includes('total_items') || msg.includes('answered_items') || msg.includes('unanswered_items') || msg.includes('is_complete') || msg.includes('schema cache'))
-        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+        ? ' Ejecutá supabase/migration_v5_three_audit_types_staff.sql en Supabase.'
         : '';
       toast(`${e?.message || 'No se pudo finalizar la auditoría.'}${hint}`, 'danger');
     }
@@ -752,6 +855,7 @@
       if (audit.status !== 'draft') return openAudit(id);
       const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
       if (responseError) throw responseError;
+      await loadStaffMembers(true);
       state.activeAudit = audit;
       state.activeResponses = responses;
       state.editingCompleted = false;
@@ -768,6 +872,7 @@
       if (audit.status !== 'completed') return continueDraft(id);
       const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
       if (responseError) throw responseError;
+      await loadStaffMembers(true);
       state.activeAudit = audit;
       state.activeResponses = responses;
       state.editingCompleted = true;
@@ -782,6 +887,8 @@
   async function saveCompletedAuditEdit() {
     if (!state.activeAudit || !state.editingCompleted) return;
     const meta = collectExecutionMeta();
+    const identityMissing = validateAuditIdentity(meta);
+    if (identityMissing.length) { toast(`Completá los datos requeridos: ${identityMissing.join(', ')}.`, 'warning'); return; }
     const traceMissing = validateVehicleTraceability(meta);
     if (traceMissing.length) {
       toast(`Completá la trazabilidad del vehículo: ${traceMissing.join(', ')}.`, 'warning');
@@ -801,6 +908,9 @@
         p_audit_date: meta.audit_date,
         p_responsible_name: meta.responsible_name,
         p_operators_text: meta.operators_text,
+        p_present_staff_ids: meta.present_staff_ids,
+        p_staff_member_id: meta.staff_member_id,
+        p_staff_member_name_snapshot: meta.staff_member_name_snapshot,
         p_vehicle_plate: meta.vehicle_plate,
         p_vehicle_received_by: meta.vehicle_received_by,
         p_vehicle_workers_text: meta.vehicle_workers_text,
@@ -808,7 +918,7 @@
         p_general_notes: el('executionGeneralNotes').value.trim() || null,
         p_responses: state.activeResponses.map(r => ({ id: r.id, answer: r.answer, observation: r.observation || null }))
       };
-      const { error } = await client.rpc('update_completed_audit_v4', params);
+      const { error } = await client.rpc('update_completed_audit_v5', params);
       if (error) throw error;
       const id = state.activeAudit.id;
       state.activeAudit = null;
@@ -819,8 +929,8 @@
     } catch (e) {
       console.error(e);
       const msg = String(e?.message || '');
-      const hint = msg.includes('update_completed_audit_v4') || msg.includes('does not exist')
-        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+      const hint = msg.includes('update_completed_audit_v5') || msg.includes('does not exist')
+        ? ' Ejecutá supabase/migration_v5_three_audit_types_staff.sql en Supabase.'
         : '';
       toast(`${e?.message || 'No se pudieron guardar los cambios.'}${hint}`, 'danger');
     } finally { loading(false); }
@@ -869,7 +979,7 @@
       console.error(e);
       const msg = String(e?.message || '');
       const hint = (msg.includes('audit_activity_log') || msg.includes('delete_audits_secure') || msg.includes('does not exist'))
-        ? ' Ejecutá supabase/migration_v4_incomplete_and_delete_fix.sql en Supabase.'
+        ? ' Ejecutá supabase/migration_v5_three_audit_types_staff.sql en Supabase.'
         : '';
       toast(`${e?.message || 'No se pudieron eliminar las auditorías.'}${hint}`, 'danger');
     } finally {
@@ -914,7 +1024,7 @@
       if (search) {
         const haystack = [
           a.vehicle_plate, a.responsible_name, a.operators_text, a.vehicle_received_by,
-          a.vehicle_workers_text, a.vehicle_final_control_by, a.auditor?.full_name, a.auditor?.email,
+          a.vehicle_workers_text, a.vehicle_final_control_by, a.staff_member_name_snapshot, a.auditor?.full_name, a.auditor?.email,
           auditTypeLabel(a.audit_type), auditIdentity(a)
         ].filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(search)) return false;
@@ -1024,7 +1134,10 @@
         <div class="mt-1"><strong>Control final:</strong> ${esc(audit.vehicle_final_control_by || '—')}</div>`;
     }
     if (audit.audit_type === 'local') {
-      return `<div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Personal presente:</strong> ${esc(audit.operators_text || '—')}</div>`;
+      return `<div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Operarios presentes:</strong> ${esc(audit.operators_text || '—')}</div>`;
+    }
+    if (audit.audit_type === 'personnel') {
+      return `<div class="mt-3"><strong>Operario auditado:</strong> ${esc(audit.staff_member_name_snapshot || '—')}</div>`;
     }
     return `<div class="mt-3"><strong>Responsable:</strong> ${esc(audit.responsible_name || '—')}</div><div class="mt-1"><strong>Operarios:</strong> ${esc(audit.operators_text || '—')}</div><div class="mt-1"><strong>Patente:</strong> ${esc(audit.vehicle_plate || '—')}</div>`;
   }
@@ -1121,9 +1234,11 @@
       doc.text(`Patente: ${audit.vehicle_plate || '—'}    Recibió: ${audit.vehicle_received_by || '—'}`, margin, yMeta); yMeta += 5;
       doc.text(`Trabajaron: ${audit.vehicle_workers_text || '—'}`, margin, yMeta); yMeta += 5;
       doc.text(`Control final: ${audit.vehicle_final_control_by || '—'}`, margin, yMeta); yMeta += 5;
+    } else if (audit.audit_type === 'personnel') {
+      doc.text(`Operario auditado: ${audit.staff_member_name_snapshot || '—'}`, margin, yMeta); yMeta += 5;
     } else {
       doc.text(`Responsable: ${audit.responsible_name || '—'}`, margin, yMeta); yMeta += 5;
-      doc.text(`Personal presente: ${audit.operators_text || '—'}`, margin, yMeta); yMeta += 5;
+      doc.text(`Operarios presentes: ${audit.operators_text || '—'}`, margin, yMeta); yMeta += 5;
       if (audit.audit_type === 'legacy' && audit.vehicle_plate) { doc.text(`Patente histórica: ${audit.vehicle_plate}`, margin, yMeta); yMeta += 5; }
     }
 
@@ -1174,7 +1289,7 @@
       doc.setPage(i); doc.setFontSize(7); doc.setTextColor(110);
       doc.text(`Clean It · Auditoría ${audit.id.slice(0,8)} · Página ${i}/${pages}`, margin, 292);
     }
-    const identity = audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'SIN-PATENTE') : audit.audit_type === 'local' ? 'LOCAL' : 'HISTORICA';
+    const identity = audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'SIN-PATENTE') : audit.audit_type === 'personnel' ? (audit.staff_member_name_snapshot || 'OPERARIO') : audit.audit_type === 'local' ? 'LOCAL' : 'HISTORICA';
     const safeIdentity = identity.replace(/[^a-z0-9-]/gi, '_');
     doc.save(`Auditoria_CleanIt_${audit.audit_type || 'legacy'}_${fmtDate(audit.audit_date).replaceAll('/','-')}_${safeIdentity}.pdf`);
   }
@@ -1188,7 +1303,8 @@
       const checklist = await fetchChecklist(false);
       const renderType = (type) => {
         const sections = checklist.filter(s => s.audit_type === type);
-        return `<div class="audit-type-heading"><div><h2 class="h5 mb-1">${auditTypeLabel(type)}</h2><div class="small text-secondary">${type === 'local' ? 'Secciones 1 a 4: estado general del local.' : 'Secciones 5 a 12: proceso y trazabilidad de cada vehículo.'}</div></div><span class="type-pill">${sections.length} secciones</span></div>
+        const description = type === 'local' ? 'Secciones 1 a 3: estado general del local.' : type === 'personnel' ? 'Sección 4: evaluación individual de cada operario.' : 'Secciones 5 a 12: proceso y trazabilidad de cada vehículo.';
+        return `<div class="audit-type-heading"><div><h2 class="h5 mb-1">${auditTypeLabel(type)}</h2><div class="small text-secondary">${description}</div></div><span class="type-pill">${sections.length} secciones</span></div>
           ${sections.length ? sections.map(s => `<section class="admin-section ${s.is_active ? '' : 'inactive-row'}">
             <div class="admin-section-head">
               <div><div class="d-flex gap-2 align-items-center"><strong>${esc(s.title)}</strong>${s.is_active ? '' : '<span class="badge badge-soft-neutral">Inactiva</span>'}</div><div class="small text-secondary">${esc(s.description || '')}</div></div>
@@ -1201,7 +1317,7 @@
             </div>`).join('') : '<div class="p-3 text-secondary small">Sin ítems.</div>'}
           </section>`).join('') : '<div class="panel-card p-4 text-secondary">No hay secciones para este tipo.</div>'}`;
       };
-      el('checklistAdminContainer').innerHTML = renderType('local') + renderType('vehicle');
+      el('checklistAdminContainer').innerHTML = renderType('local') + renderType('personnel') + renderType('vehicle');
       state.activeChecklist = checklist;
     } catch (e) { console.error(e); }
     finally { loading(false); }
@@ -1304,6 +1420,58 @@
   }
 
   // ============================================================
+  // STAFF ADMIN
+  // ============================================================
+  async function loadStaffAdmin() {
+    loading(true);
+    try {
+      await loadStaffMembers(true);
+      const body = el('staffBody');
+      body.innerHTML = state.staffMembers.length ? state.staffMembers.map(staff => `<tr class="${staff.is_active ? '' : 'inactive-row'}">
+        <td class="fw-semibold">${esc(staff.full_name)}</td>
+        <td><span class="badge ${staff.is_active ? 'badge-soft-success' : 'badge-soft-neutral'}">${staff.is_active ? 'Activo' : 'Inactivo'}</span></td>
+        <td>${fmtDate(staff.created_at)}</td>
+        <td class="text-end"><div class="d-inline-flex gap-1"><button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.editStaffMember('${staff.id}')">Editar</button><button class="btn btn-sm ${staff.is_active ? 'btn-outline-danger' : 'btn-outline-success'}" onclick="CleanItApp.toggleStaffMember('${staff.id}', ${!staff.is_active})">${staff.is_active ? 'Desactivar' : 'Activar'}</button></div></td>
+      </tr>`).join('') : '<tr><td colspan="4"><div class="empty-state">Todavía no hay operarios cargados.</div></td></tr>';
+    } catch (e) { console.error(e); toast(e.message || 'No se pudieron cargar los operarios.', 'danger'); }
+    finally { loading(false); }
+  }
+
+  async function addStaffMember(ev) {
+    ev.preventDefault();
+    const fullName = el('staffNewName').value.trim();
+    if (!fullName) return;
+    loading(true);
+    try {
+      const { error } = await client.from('staff_members').insert({ full_name: fullName, created_by: state.profile.id });
+      if (error) throw error;
+      el('staffNewName').value = '';
+      toast('Operario agregado.', 'success');
+      await loadStaffAdmin();
+    } catch (e) { console.error(e); toast(e.message || 'No se pudo agregar el operario.', 'danger'); }
+    finally { loading(false); }
+  }
+
+  async function editStaffMember(id) {
+    const staff = state.staffMembers.find(x => x.id === id);
+    if (!staff) return;
+    const fullName = prompt('Nombre y apellido del operario:', staff.full_name);
+    if (fullName === null) return;
+    if (!fullName.trim()) return toast('El nombre no puede quedar vacío.', 'warning');
+    const { error } = await client.from('staff_members').update({ full_name: fullName.trim() }).eq('id', id);
+    if (error) return toast(error.message, 'danger');
+    toast('Operario actualizado.', 'success');
+    await loadStaffAdmin();
+  }
+
+  async function toggleStaffMember(id, isActive) {
+    const { error } = await client.from('staff_members').update({ is_active: isActive }).eq('id', id);
+    if (error) return toast(error.message, 'danger');
+    toast(isActive ? 'Operario activado.' : 'Operario desactivado.', 'success');
+    await loadStaffAdmin();
+  }
+
+  // ============================================================
   // USERS ADMIN
   // ============================================================
   async function loadUsersAdmin() {
@@ -1350,6 +1518,8 @@
     editItem,
     deleteItem,
     deleteSection,
+    editStaffMember,
+    toggleStaffMember,
     changeRole
   };
 

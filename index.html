@@ -55,6 +55,7 @@
         <button class="nav-link" data-view="newAudit">Nueva auditoría</button>
         <button class="nav-link" data-view="history">Historial</button>
         <button class="nav-link admin-only d-none" data-view="checklistAdmin">Checklist</button>
+        <button class="nav-link admin-only d-none" data-view="staffAdmin">Operarios</button>
         <button class="nav-link admin-only d-none" data-view="usersAdmin">Usuarios</button>
       </nav>
 
@@ -95,9 +96,14 @@
                 <select id="dashboardTypeFilter" class="form-select">
                   <option value="">Todas</option>
                   <option value="local">Estado del local</option>
+                  <option value="personnel">Presentación del personal</option>
                   <option value="vehicle">Vehículo</option>
                   <option value="legacy">Históricas (formato anterior)</option>
                 </select>
+              </div>
+              <div id="dashboardStaffFilterWrap" class="d-none">
+                <label for="dashboardStaffFilter" class="form-label small mb-1">Operario</label>
+                <select id="dashboardStaffFilter" class="form-select"><option value="">Todos</option></select>
               </div>
               <button class="btn btn-dark" data-nav="newAudit">+ Nueva auditoría</button>
             </div>
@@ -151,13 +157,19 @@
                 <div class="col-12">
                   <label class="form-label fw-semibold">Tipo de auditoría</label>
                   <div class="row g-2">
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                       <label class="audit-type-card">
                         <input class="form-check-input" type="radio" name="auditType" value="local" checked>
-                        <span><strong>Estado del local</strong><small>Orden, preparación, máquinas y presentación del personal.</small></span>
+                        <span><strong>Estado del local</strong><small>Orden y limpieza, preparación para la operación y control de máquinas.</small></span>
                       </label>
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-4">
+                      <label class="audit-type-card">
+                        <input class="form-check-input" type="radio" name="auditType" value="personnel">
+                        <span><strong>Presentación del personal</strong><small>Evaluación diaria individual de uniforme, puntualidad y EPP de cada operario.</small></span>
+                      </label>
+                    </div>
+                    <div class="col-md-4">
                       <label class="audit-type-card">
                         <input class="form-check-input" type="radio" name="auditType" value="vehicle">
                         <span><strong>Vehículo</strong><small>Recepción, proceso completo, responsables y control final.</small></span>
@@ -170,7 +182,21 @@
                 <div id="startLocalFields" class="col-12">
                   <div class="row g-3">
                     <div class="col-md-4"><label class="form-label">Responsable operativo</label><input id="responsibleName" class="form-control" placeholder="Nombre y apellido"></div>
-                    <div class="col-md-8"><label class="form-label">Personal presente</label><input id="operatorsText" class="form-control" placeholder="Nombres separados por coma"></div>
+                    <div class="col-md-8">
+                      <label class="form-label">Operarios presentes <span class="text-danger">*</span></label>
+                      <div id="startPresentStaffList" class="staff-selector"></div>
+                      <div class="form-text">Marcá quiénes están trabajando en el local al momento de la auditoría.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="startPersonnelFields" class="col-12 d-none">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">Operario auditado <span class="text-danger">*</span></label>
+                      <select id="personnelStaffMember" class="form-select"><option value="">Seleccionar operario…</option></select>
+                    </div>
+                    <div class="col-md-6 d-flex align-items-end"><div class="alert alert-light border mb-0 w-100 py-2 small">Esta auditoría corresponde únicamente a la sección <strong>4. Presentación del personal</strong> y queda registrada de forma individual.</div></div>
                   </div>
                 </div>
 
@@ -215,8 +241,11 @@
                 <div id="editLocalFields" class="col-12">
                   <div class="row g-3">
                     <div class="col-md-4"><label class="form-label">Responsable operativo</label><input id="editResponsibleName" class="form-control"></div>
-                    <div class="col-md-8"><label class="form-label">Personal presente</label><input id="editOperatorsText" class="form-control"></div>
+                    <div class="col-md-8"><label class="form-label">Operarios presentes</label><div id="editPresentStaffList" class="staff-selector"></div></div>
                   </div>
+                </div>
+                <div id="editPersonnelFields" class="col-12 d-none">
+                  <div class="row g-3"><div class="col-md-6"><label class="form-label">Operario auditado</label><select id="editStaffMember" class="form-select"></select></div></div>
                 </div>
                 <div id="editVehicleFields" class="col-12 d-none">
                   <div class="row g-3">
@@ -249,9 +278,9 @@
             <div class="row g-2 align-items-end">
               <div class="col-md-2"><label class="form-label small">Desde</label><input id="historyFrom" type="date" class="form-control"></div>
               <div class="col-md-2"><label class="form-label small">Hasta</label><input id="historyTo" type="date" class="form-control"></div>
-              <div class="col-md-2"><label class="form-label small">Tipo</label><select id="historyType" class="form-select"><option value="">Todos</option><option value="local">Estado del local</option><option value="vehicle">Vehículo</option><option value="legacy">Históricas</option></select></div>
+              <div class="col-md-2"><label class="form-label small">Tipo</label><select id="historyType" class="form-select"><option value="">Todos</option><option value="local">Estado del local</option><option value="personnel">Presentación del personal</option><option value="vehicle">Vehículo</option><option value="legacy">Históricas</option></select></div>
               <div class="col-md-2"><label class="form-label small">Estado</label><select id="historyStatus" class="form-select"><option value="">Todos</option><option value="completed">Finalizadas</option><option value="draft">Borradores</option></select></div>
-              <div class="col-md-4"><label class="form-label small">Buscar</label><input id="historySearch" class="form-control" placeholder="Patente / responsable / operario"></div>
+              <div class="col-md-4"><label class="form-label small">Buscar</label><input id="historySearch" class="form-control" placeholder="Patente / responsable / operario auditado"></div>
             </div>
           </div>
           <div id="historySelectionBar" class="selection-toolbar mb-3">
@@ -288,6 +317,21 @@
           <div id="checklistAdminContainer"></div>
         </section>
 
+
+        <!-- STAFF ADMIN -->
+        <section id="view-staffAdmin" class="app-view d-none">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+            <div><h1 class="h3 mb-1">Operarios</h1><p class="text-secondary mb-0">Maestro utilizado para registrar presencia y auditorías individuales.</p></div>
+          </div>
+          <div class="panel-card p-4 mb-3">
+            <form id="staffAddForm" class="row g-2 align-items-end">
+              <div class="col-md-8"><label class="form-label">Nombre y apellido</label><input id="staffNewName" class="form-control" placeholder="Ej. Juan Pérez" required></div>
+              <div class="col-md-4"><button class="btn btn-dark w-100" type="submit">+ Agregar operario</button></div>
+            </form>
+          </div>
+          <div class="panel-card"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Operario</th><th>Estado</th><th>Alta</th><th></th></tr></thead><tbody id="staffBody"></tbody></table></div></div>
+        </section>
+
         <!-- USERS ADMIN -->
         <section id="view-usersAdmin" class="app-view d-none">
           <div class="mb-4"><h1 class="h3 mb-1">Usuarios</h1><p class="text-secondary mb-0">Asignación de roles a cuentas existentes de Supabase Auth.</p></div>
@@ -314,7 +358,7 @@
         <div class="modal-header"><h5 id="sectionModalTitle" class="modal-title">Sección</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
         <div class="modal-body">
           <input id="sectionId" type="hidden">
-          <div class="mb-3"><label class="form-label">Tipo de auditoría</label><select id="sectionAuditType" class="form-select" required><option value="local">Estado del local</option><option value="vehicle">Vehículo</option></select></div>
+          <div class="mb-3"><label class="form-label">Tipo de auditoría</label><select id="sectionAuditType" class="form-select" required><option value="local">Estado del local</option><option value="personnel">Presentación del personal</option><option value="vehicle">Vehículo</option></select></div>
           <div class="mb-3"><label class="form-label">Título</label><input id="sectionTitle" class="form-control" required></div>
           <div class="mb-3"><label class="form-label">Descripción</label><textarea id="sectionDescription" class="form-control" rows="2"></textarea></div>
           <div class="row g-3"><div class="col-6"><label class="form-label">Orden</label><input id="sectionOrder" type="number" class="form-control" value="10"></div><div class="col-6 d-flex align-items-end"><div class="form-check form-switch mb-2"><input id="sectionActive" class="form-check-input" type="checkbox" checked><label class="form-check-label">Activa</label></div></div></div>
