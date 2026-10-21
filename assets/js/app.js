@@ -256,6 +256,9 @@
     el('analysisFrom').addEventListener('change', renderAnalysis);
     el('analysisTo').addEventListener('change', renderAnalysis);
     el('analysisRefreshBtn').addEventListener('click', () => loadAnalysis(true));
+    el('analysisPdfBtn').addEventListener('click', downloadAnalysisPdf);
+    el('analysisXlsxBtn').addEventListener('click', downloadAnalysisXlsx);
+    el('analysisDocxBtn').addEventListener('click', downloadAnalysisDocx);
     el('analysisStaffDetail').addEventListener('change', () => renderAnalysisStaffDetail(el('analysisStaffDetail').value));
 
     el('dashboardTypeFilter').addEventListener('change', () => {
@@ -746,7 +749,7 @@
     renderAnalysisObservations(audits, responses, byId);
   }
 
-  function renderAnalysisInsights(audits, responses, metrics, staff) {
+  function buildAnalysisInsightsData(audits, responses, metrics, staff) {
     const insights = [];
     const evaluated = responses.filter(r => evaluatedAnswer(r.answer));
     const failures = evaluated.filter(r => r.answer === 'non_complies');
@@ -780,6 +783,11 @@
       const trend = calculateRecentTrend(audits, responses);
       if (trend && Math.abs(trend.delta) >= 5) insights.push({ level: trend.delta > 0 ? 'success' : 'danger', title: trend.delta > 0 ? 'Tendencia reciente favorable' : 'Deterioro reciente del cumplimiento', text:`Los últimos 30 días muestran ${trend.current.toFixed(1)}% frente a ${trend.previous.toFixed(1)}% en los 30 días anteriores (${trend.delta > 0 ? '+' : ''}${trend.delta.toFixed(1)} puntos).` });
     }
+    return insights;
+  }
+
+  function renderAnalysisInsights(audits, responses, metrics, staff) {
+    const insights = buildAnalysisInsightsData(audits, responses, metrics, staff);
     const levelClass = { success:'analysis-insight-success', warning:'analysis-insight-warning', danger:'analysis-insight-danger', neutral:'analysis-insight-neutral' };
     el('analysisInsights').innerHTML = insights.map(i => `<div class="analysis-insight ${levelClass[i.level] || levelClass.neutral}"><div class="analysis-insight-title">${esc(i.title)}</div><div class="analysis-insight-text">${esc(i.text)}</div></div>`).join('');
   }
@@ -902,6 +910,376 @@
       <div class="small text-secondary mt-1">${fmtDate(x.audit.audit_date)} · ${esc(auditIdentity(x.audit))}</div>
       <div class="small mt-2">${esc(x.response.observation)}</div>
     </div>`).join('') : '<div class="empty-state">No hay observaciones escritas asociadas a incumplimientos en este período.</div>';
+  }
+
+
+  // ============================================================
+  // ANALYSIS EXPORTS
+  // ============================================================
+  function buildAnalysisTrendRows(audits, responses) {
+    const auditById = new Map(audits.map(a => [a.id, a]));
+    const map = new Map();
+    responses.forEach(r => {
+      if (!evaluatedAnswer(r.answer)) return;
+      const audit = auditById.get(r.audit_id);
+      if (!audit) return;
+      const month = String(audit.audit_date || '').slice(0, 7);
+      if (!month) return;
+      const key = `${month}|${audit.audit_type}`;
+      const acc = map.get(key) || { total: 0, complies: 0 };
+      acc.total += 1;
+      if (r.answer === 'complies') acc.complies += 1;
+      map.set(key, acc);
+    });
+    const months = [...new Set([...map.keys()].map(k => k.split('|')[0]))].sort();
+    const value = (month, type) => {
+      const x = map.get(`${month}|${type}`);
+      return x?.total ? x.complies / x.total : null;
+    };
+    return months.map(month => ({
+      month,
+      label: `${month.slice(5,7)}/${month.slice(0,4)}`,
+      local: value(month, 'local'),
+      personnel: value(month, 'personnel'),
+      vehicle: value(month, 'vehicle')
+    }));
+  }
+
+  function getAnalysisExportData() {
+    if (!state.analysisLoaded) throw new Error('Primero cargá la sección Análisis.');
+    const { range, audits, responses, byId } = getAnalysisDataset();
+    const evaluated = responses.filter(r => evaluatedAnswer(r.answer));
+    const complies = evaluated.filter(r => r.answer === 'complies').length;
+    const failures = evaluated.filter(r => r.answer === 'non_complies').length;
+    const critical = evaluated.filter(r => r.answer === 'non_complies' && r.is_critical_snapshot).length;
+    const metrics = buildFailureMetrics(audits, responses);
+    const staff = buildStaffMetrics(audits, responses);
+    const incomplete = audits.filter(a => !auditCoverage(a).complete).length;
+    const recurring = metrics.filter(m => m.failures >= 2).length;
+    const observations = responses
+      .filter(r => r.answer === 'non_complies' && r.observation)
+      .map(r => {
+        const audit = byId.get(r.audit_id);
+        return audit ? {
+          date: audit.audit_date,
+          type: audit.audit_type,
+          identity: auditIdentity(audit),
+          staff: audit.audit_type === 'personnel' ? (audit.staff_member_name_snapshot || '') : '',
+          section: r.section_title_snapshot || '',
+          item: r.item_title_snapshot || '',
+          critical: !!r.is_critical_snapshot,
+          observation: r.observation
+        } : null;
+      })
+      .filter(Boolean)
+      .sort((a,b) => String(b.date).localeCompare(String(a.date)));
+    return {
+      range, audits, responses, evaluated, metrics, staff, observations,
+      insights: buildAnalysisInsightsData(audits, responses, metrics, staff),
+      trendRows: buildAnalysisTrendRows(audits, responses),
+      kpis: {
+        audits: audits.length,
+        evaluated: evaluated.length,
+        complies,
+        failures,
+        compliance: evaluated.length ? complies / evaluated.length : null,
+        critical,
+        recurring,
+        incomplete
+      }
+    };
+  }
+
+  function analysisFilename(ext, range) {
+    const clean = v => String(v || '').replace(/[^0-9-]/g, '');
+    const suffix = range.from || range.to
+      ? `${clean(range.from) || 'inicio'}_a_${clean(range.to) || 'hoy'}`
+      : 'todo_el_historial';
+    return `Analisis_CleanIt_${suffix}.${ext}`;
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function analysisPriorityText(metric) {
+    if (metric.criticalFailures > 0 || (metric.failures >= 2 && metric.failureRate >= 30)) return 'Alta';
+    if (metric.failures >= 2 || metric.failureRate >= 15) return 'Media';
+    return 'Baja';
+  }
+
+  function analysisPdfSectionTitle(doc, text, y) {
+    const pageHeight = doc.internal.pageSize.getHeight();
+    if (y > pageHeight - 28) { doc.addPage(); y = 18; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(0);
+    doc.text(text, 14, y);
+    return y + 3;
+  }
+
+  async function downloadAnalysisPdf() {
+    loading(true);
+    try {
+      const data = getAnalysisExportData();
+      const { jsPDF } = window.jspdf || {};
+      if (!jsPDF) throw new Error('No se pudo cargar el generador de PDF.');
+      const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+      const margin = 14;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text('CLEAN IT', margin, 16);
+      doc.setFontSize(14); doc.text('Análisis de auditorías', margin, 24);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+      doc.text(`Período: ${data.range.label}${data.range.from ? ` · ${fmtDate(data.range.from)} a ${fmtDate(data.range.to || todayISO())}` : ''}`, margin, 31);
+      doc.text(`Generado: ${fmtDateTime(new Date().toISOString())}`, margin, 36);
+
+      doc.autoTable({
+        startY: 42,
+        head: [['Auditorías','Cumplimiento','Evaluaciones','Incumplimientos','Críticas','Recurrencias','Incompletas']],
+        body: [[data.kpis.audits, data.kpis.compliance === null ? '—' : `${(data.kpis.compliance*100).toFixed(1)}%`, data.kpis.evaluated, data.kpis.failures, data.kpis.critical, data.kpis.recurring, data.kpis.incomplete]],
+        theme:'grid', styles:{fontSize:7.5, cellPadding:1.8}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin}
+      });
+      let y = doc.lastAutoTable.finalY + 8;
+
+      y = analysisPdfSectionTitle(doc, 'Lectura ejecutiva', y);
+      doc.autoTable({ startY:y, head:[['Hallazgo','Interpretación']], body:data.insights.length ? data.insights.map(i => [i.title, i.text]) : [['Sin hallazgos','No hay datos suficientes.']], theme:'grid', styles:{fontSize:8,cellPadding:2,overflow:'linebreak'}, headStyles:{fillColor:[17,24,39]}, columnStyles:{0:{cellWidth:55}}, margin:{left:margin,right:margin} });
+      y = doc.lastAutoTable.finalY + 8;
+
+      y = analysisPdfSectionTitle(doc, 'Ranking de operarios', y);
+      doc.autoTable({ startY:y, head:[['Operario','Aud.','Eval.','Cumpl.','No cumple','Críticas','Principal incumplimiento','Frecuencia']], body:data.staff.length ? data.staff.map(s => [s.name,s.audits,s.evaluated,s.compliance===null?'—':`${s.compliance.toFixed(1)}%`,s.failures,s.critical,s.topFailure?.title||'—',s.topFailure?`${s.topFailure.failures}/${s.topFailure.evaluated} (${s.topFailure.failureRate.toFixed(1)}%)`:'—']) : [['Sin datos','','','','','','','']], theme:'grid', styles:{fontSize:6.8,cellPadding:1.4,overflow:'linebreak'}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin} });
+      y = doc.lastAutoTable.finalY + 8;
+
+      const staffDetailRows = [];
+      data.staff.forEach(s => s.items.forEach(i => staffDetailRows.push([s.name, `${i.code ? `${i.code} · ` : ''}${i.title}`, i.failures, i.evaluated, `${i.failureRate.toFixed(1)}%`, i.critical ? 'Sí' : 'No', fmtDate(i.lastFailure)])));
+      y = analysisPdfSectionTitle(doc, 'Detalle de incumplimientos por operario', y);
+      doc.autoTable({ startY:y, head:[['Operario','Incumplimiento','Fallas','Evaluado','Frecuencia','Crítico','Última']], body:staffDetailRows.length ? staffDetailRows : [['Sin incumplimientos individuales','','','','','','']], theme:'grid', styles:{fontSize:6.8,cellPadding:1.4,overflow:'linebreak'}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin} });
+      y = doc.lastAutoTable.finalY + 8;
+
+      const addFailureTable = (title, rows) => {
+        y = analysisPdfSectionTitle(doc, title, y);
+        doc.autoTable({ startY:y, head:[['Ítem','Sección','Fallas','Evaluado','Frecuencia','Críticas','Última','Prioridad']], body:rows.length ? rows.map(m => [`${m.code ? `${m.code} · ` : ''}${m.title}`,m.section,m.failures,m.evaluated,`${m.failureRate.toFixed(1)}%`,m.criticalFailures,fmtDate(m.lastFailure),analysisPriorityText(m)]) : [['Sin incumplimientos','','','','','','','']], theme:'grid', styles:{fontSize:6.8,cellPadding:1.4,overflow:'linebreak'}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin} });
+        y = doc.lastAutoTable.finalY + 8;
+      };
+      addFailureTable('Estado del local · incumplimientos', data.metrics.filter(m => m.auditType === 'local' && m.failures > 0));
+      addFailureTable('Vehículos · incumplimientos', data.metrics.filter(m => m.auditType === 'vehicle' && m.failures > 0));
+      addFailureTable('Incumplimientos generales', data.metrics.filter(m => m.failures > 0));
+
+      y = analysisPdfSectionTitle(doc, 'Evolución mensual del cumplimiento', y);
+      doc.autoTable({ startY:y, head:[['Mes','Estado del local','Presentación del personal','Vehículo']], body:data.trendRows.length ? data.trendRows.map(r => [r.label,r.local===null?'—':`${(r.local*100).toFixed(1)}%`,r.personnel===null?'—':`${(r.personnel*100).toFixed(1)}%`,r.vehicle===null?'—':`${(r.vehicle*100).toFixed(1)}%`]) : [['Sin datos','','','']], theme:'grid', styles:{fontSize:7.5,cellPadding:1.7}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin} });
+      y = doc.lastAutoTable.finalY + 8;
+
+      y = analysisPdfSectionTitle(doc, 'Evidencia cualitativa · observaciones de incumplimientos', y);
+      doc.autoTable({ startY:y, head:[['Fecha','Tipo','Identificación','Ítem','Crítica','Observación']], body:data.observations.length ? data.observations.map(o => [fmtDate(o.date),auditTypeLabel(o.type),o.identity,o.item,o.critical?'Sí':'No',o.observation]) : [['Sin observaciones','','','','','']], theme:'grid', styles:{fontSize:6.8,cellPadding:1.5,overflow:'linebreak'}, headStyles:{fillColor:[17,24,39]}, margin:{left:margin,right:margin} });
+
+      const pages = doc.getNumberOfPages();
+      for (let p=1; p<=pages; p++) { doc.setPage(p); doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(110); doc.text(`Clean It · Análisis · Página ${p}/${pages}`, 14, 292); }
+      doc.save(analysisFilename('pdf', data.range));
+      toast('Análisis descargado en PDF.', 'success');
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo generar el PDF de análisis.', 'danger'); }
+    finally { loading(false); }
+  }
+
+  function setSheetWidths(ws, widths) {
+    ws['!cols'] = widths.map(w => ({ wch: w }));
+    if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  }
+
+  function formatPercentColumns(ws, headerNames = []) {
+    if (!ws?.['!ref'] || !headerNames.length) return;
+    const range = window.XLSX.utils.decode_range(ws['!ref']);
+    const headers = {};
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[window.XLSX.utils.encode_cell({ r: range.s.r, c })];
+      if (cell?.v !== undefined) headers[String(cell.v)] = c;
+    }
+    headerNames.forEach(name => {
+      const c = headers[name];
+      if (c === undefined) return;
+      for (let r = range.s.r + 1; r <= range.e.r; r++) {
+        const cell = ws[window.XLSX.utils.encode_cell({ r, c })];
+        if (cell && typeof cell.v === 'number') cell.z = '0.0%';
+      }
+    });
+  }
+
+  async function downloadAnalysisXlsx() {
+    loading(true);
+    try {
+      const data = getAnalysisExportData();
+      const XLSX = window.XLSX;
+      if (!XLSX) throw new Error('No se pudo cargar el generador de Excel.');
+      const wb = XLSX.utils.book_new();
+
+      const summary = [
+        ['CLEAN IT · ANÁLISIS DE AUDITORÍAS'],
+        ['Período', data.range.label],
+        ['Desde', data.range.from ? fmtDate(data.range.from) : 'Inicio'],
+        ['Hasta', data.range.to ? fmtDate(data.range.to) : 'Actualidad'],
+        ['Generado', fmtDateTime(new Date().toISOString())],
+        [],
+        ['Indicador','Valor'],
+        ['Auditorías analizadas', data.kpis.audits],
+        ['Ítems evaluados', data.kpis.evaluated],
+        ['Cumplimiento', data.kpis.compliance],
+        ['Incumplimientos', data.kpis.failures],
+        ['Fallas críticas', data.kpis.critical],
+        ['Recurrencias', data.kpis.recurring],
+        ['Auditorías incompletas', data.kpis.incomplete],
+        [],
+        ['LECTURA EJECUTIVA'],
+        ['Hallazgo','Interpretación'],
+        ...data.insights.map(i => [i.title, i.text])
+      ];
+      const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+      setSheetWidths(wsSummary, [34, 100]);
+      if (wsSummary['B10']) wsSummary['B10'].z = '0.0%';
+      XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumen');
+
+      const staffRows = data.staff.map(s => ({
+        Operario:s.name, Auditorías:s.audits, Evaluaciones:s.evaluated, Cumple:s.complies, 'No cumple':s.failures,
+        'Fallas críticas':s.critical, 'Cumplimiento %':s.compliance === null ? null : s.compliance/100,
+        'Principal incumplimiento':s.topFailure?.title || '', 'Fallas principal':s.topFailure?.failures || 0,
+        'Evaluado principal':s.topFailure?.evaluated || 0, 'Frecuencia principal %':s.topFailure ? s.topFailure.failureRate/100 : null
+      }));
+      const wsStaff = XLSX.utils.json_to_sheet(staffRows.length ? staffRows : [{Operario:'Sin datos'}]);
+      setSheetWidths(wsStaff, [28,12,14,10,12,14,16,42,16,18,20]);
+      formatPercentColumns(wsStaff, ['Cumplimiento %','Frecuencia principal %']);
+      XLSX.utils.book_append_sheet(wb, wsStaff, 'Operarios');
+
+      const staffDetail = [];
+      data.staff.forEach(s => s.items.forEach(i => staffDetail.push({
+        Operario:s.name, Ítem:i.title, Código:i.code || '', Crítico:i.critical?'Sí':'No', Fallas:i.failures,
+        Evaluado:i.evaluated, 'Frecuencia %':i.failureRate/100, 'Última falla':i.lastFailure ? fmtDate(i.lastFailure) : ''
+      })));
+      const wsStaffDetail = XLSX.utils.json_to_sheet(staffDetail.length ? staffDetail : [{Operario:'Sin incumplimientos individuales'}]);
+      setSheetWidths(wsStaffDetail, [28,48,12,10,10,12,14,16]);
+      formatPercentColumns(wsStaffDetail, ['Frecuencia %']);
+      XLSX.utils.book_append_sheet(wb, wsStaffDetail, 'Detalle operarios');
+
+      const failureRows = data.metrics.filter(m => m.failures > 0).map(m => ({
+        Tipo:auditTypeLabel(m.auditType), Sección:m.section, Código:m.code || '', Ítem:m.title, Crítico:m.critical?'Sí':'No',
+        Fallas:m.failures, Evaluado:m.evaluated, 'Frecuencia %':m.failureRate/100, 'Fallas críticas':m.criticalFailures,
+        'Última falla':m.lastFailure ? fmtDate(m.lastFailure) : '', Prioridad:analysisPriorityText(m)
+      }));
+      const wsFailures = XLSX.utils.json_to_sheet(failureRows.length ? failureRows : [{Tipo:'Sin incumplimientos'}]);
+      setSheetWidths(wsFailures, [24,38,12,48,10,10,12,14,16,16,12]);
+      formatPercentColumns(wsFailures, ['Frecuencia %']);
+      XLSX.utils.book_append_sheet(wb, wsFailures, 'Incumplimientos');
+
+      const processSheet = (type, name) => {
+        const rows = data.metrics.filter(m => m.auditType === type && m.failures > 0).map(m => ({
+          Sección:m.section, Código:m.code || '', Ítem:m.title, Crítico:m.critical?'Sí':'No', Fallas:m.failures,
+          Evaluado:m.evaluated, 'Frecuencia %':m.failureRate/100, 'Fallas críticas':m.criticalFailures,
+          'Última falla':m.lastFailure ? fmtDate(m.lastFailure) : '', Prioridad:analysisPriorityText(m)
+        }));
+        const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{Sección:'Sin incumplimientos'}]);
+        setSheetWidths(ws, [38,12,50,10,10,12,14,16,16,12]);
+        formatPercentColumns(ws, ['Frecuencia %']);
+        XLSX.utils.book_append_sheet(wb, ws, name);
+      };
+      processSheet('local', 'Estado local');
+      processSheet('vehicle', 'Vehículos');
+
+      const trendRows = data.trendRows.map(r => ({
+        Mes:r.label, 'Estado del local':r.local, 'Presentación del personal':r.personnel, Vehículo:r.vehicle
+      }));
+      const wsTrend = XLSX.utils.json_to_sheet(trendRows.length ? trendRows : [{Mes:'Sin datos'}]);
+      setSheetWidths(wsTrend, [14,22,28,18]);
+      formatPercentColumns(wsTrend, ['Estado del local','Presentación del personal','Vehículo']);
+      XLSX.utils.book_append_sheet(wb, wsTrend, 'Tendencia');
+
+      const observationRows = data.observations.map(o => ({
+        Fecha:fmtDate(o.date), Tipo:auditTypeLabel(o.type), Identificación:o.identity, Operario:o.staff || '', Sección:o.section,
+        Ítem:o.item, Crítico:o.critical?'Sí':'No', Observación:o.observation
+      }));
+      const wsObs = XLSX.utils.json_to_sheet(observationRows.length ? observationRows : [{Fecha:'Sin observaciones'}]);
+      setSheetWidths(wsObs, [14,24,28,28,38,48,10,70]);
+      XLSX.utils.book_append_sheet(wb, wsObs, 'Observaciones');
+
+      const auditRows = data.audits.map(a => ({
+        Fecha:fmtDate(a.audit_date), Tipo:auditTypeLabel(a.audit_type), Identificación:auditIdentity(a), Responsables:auditPeopleSummary(a),
+        Auditor:a.auditor?.full_name || a.auditor?.email || '', Puntaje:a.score === null || a.score === undefined ? null : Number(a.score)/100,
+        Resultado:a.classification || '', Completa:auditCoverage(a).complete?'Sí':'No', 'Ítems respondidos':auditCoverage(a).answered,
+        'Ítems totales':auditCoverage(a).total, 'Pendientes':auditCoverage(a).unanswered
+      }));
+      const wsAudits = XLSX.utils.json_to_sheet(auditRows.length ? auditRows : [{Fecha:'Sin auditorías'}]);
+      setSheetWidths(wsAudits, [14,24,28,60,30,12,28,12,18,14,12]);
+      formatPercentColumns(wsAudits, ['Puntaje']);
+      XLSX.utils.book_append_sheet(wb, wsAudits, 'Auditorías');
+
+      XLSX.writeFile(wb, analysisFilename('xlsx', data.range));
+      toast('Análisis descargado en Excel.', 'success');
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo generar el Excel de análisis.', 'danger'); }
+    finally { loading(false); }
+  }
+
+  function docxCell(text, bold = false) {
+    const d = window.docx;
+    return new d.TableCell({ children:[new d.Paragraph({ children:[new d.TextRun({ text:String(text ?? '—'), bold })] })] });
+  }
+
+  function docxTable(headers, rows) {
+    const d = window.docx;
+    return new d.Table({
+      width:{ size:100, type:d.WidthType.PERCENTAGE },
+      rows:[
+        new d.TableRow({ tableHeader:true, children:headers.map(h => docxCell(h, true)) }),
+        ...rows.map(row => new d.TableRow({ children:row.map(v => docxCell(v, false)) }))
+      ]
+    });
+  }
+
+  async function downloadAnalysisDocx() {
+    loading(true);
+    try {
+      const data = getAnalysisExportData();
+      const d = window.docx;
+      if (!d?.Document || !d?.Packer) throw new Error('No se pudo cargar el generador de Word.');
+      const children = [
+        new d.Paragraph({ heading:d.HeadingLevel.TITLE, children:[new d.TextRun('CLEAN IT · Análisis de auditorías')] }),
+        new d.Paragraph({ children:[new d.TextRun({ text:`Período: ${data.range.label}${data.range.from ? ` · ${fmtDate(data.range.from)} a ${fmtDate(data.range.to || todayISO())}` : ''}`, bold:true })] }),
+        new d.Paragraph({ children:[new d.TextRun(`Generado: ${fmtDateTime(new Date().toISOString())}`)] }),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Resumen ejecutivo')] }),
+        docxTable(['Indicador','Valor'], [
+          ['Auditorías analizadas', data.kpis.audits],
+          ['Ítems evaluados', data.kpis.evaluated],
+          ['Cumplimiento', data.kpis.compliance === null ? '—' : `${(data.kpis.compliance*100).toFixed(1)}%`],
+          ['Incumplimientos', data.kpis.failures], ['Fallas críticas', data.kpis.critical],
+          ['Recurrencias', data.kpis.recurring], ['Auditorías incompletas', data.kpis.incomplete]
+        ]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Lectura ejecutiva')] }),
+        ...data.insights.flatMap(i => [
+          new d.Paragraph({ children:[new d.TextRun({ text:i.title, bold:true })] }),
+          new d.Paragraph({ children:[new d.TextRun(i.text)] })
+        ]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Ranking de operarios')] }),
+        docxTable(['Operario','Aud.','Eval.','Cumpl.','No cumple','Críticas','Principal incumplimiento','Frecuencia'], data.staff.length ? data.staff.map(s => [s.name,s.audits,s.evaluated,s.compliance===null?'—':`${s.compliance.toFixed(1)}%`,s.failures,s.critical,s.topFailure?.title||'—',s.topFailure?`${s.topFailure.failures}/${s.topFailure.evaluated} (${s.topFailure.failureRate.toFixed(1)}%)`:'—']) : [['Sin datos','','','','','','','']]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Detalle de incumplimientos por operario')] }),
+        docxTable(['Operario','Incumplimiento','Fallas','Evaluado','Frecuencia','Crítico','Última'], (() => { const rows=[]; data.staff.forEach(s => s.items.forEach(i => rows.push([s.name,`${i.code?`${i.code} · `:''}${i.title}`,i.failures,i.evaluated,`${i.failureRate.toFixed(1)}%`,i.critical?'Sí':'No',fmtDate(i.lastFailure)]))); return rows.length ? rows : [['Sin incumplimientos individuales','','','','','','']]; })()),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Estado del local · incumplimientos')] }),
+        docxTable(['Ítem','Fallas','Evaluado','Frecuencia','Críticas','Última','Prioridad'], data.metrics.filter(m=>m.auditType==='local'&&m.failures>0).length ? data.metrics.filter(m=>m.auditType==='local'&&m.failures>0).map(m => [`${m.code?`${m.code} · `:''}${m.title}`,m.failures,m.evaluated,`${m.failureRate.toFixed(1)}%`,m.criticalFailures,fmtDate(m.lastFailure),analysisPriorityText(m)]) : [['Sin incumplimientos','','','','','','']]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Vehículos · incumplimientos')] }),
+        docxTable(['Ítem','Fallas','Evaluado','Frecuencia','Críticas','Última','Prioridad'], data.metrics.filter(m=>m.auditType==='vehicle'&&m.failures>0).length ? data.metrics.filter(m=>m.auditType==='vehicle'&&m.failures>0).map(m => [`${m.code?`${m.code} · `:''}${m.title}`,m.failures,m.evaluated,`${m.failureRate.toFixed(1)}%`,m.criticalFailures,fmtDate(m.lastFailure),analysisPriorityText(m)]) : [['Sin incumplimientos','','','','','','']]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Incumplimientos generales')] }),
+        docxTable(['Tipo','Ítem','Fallas','Evaluado','Frecuencia','Críticas','Última','Prioridad'], data.metrics.filter(m=>m.failures>0).length ? data.metrics.filter(m=>m.failures>0).map(m => [auditTypeLabel(m.auditType),`${m.code?`${m.code} · `:''}${m.title}`,m.failures,m.evaluated,`${m.failureRate.toFixed(1)}%`,m.criticalFailures,fmtDate(m.lastFailure),analysisPriorityText(m)]) : [['Sin incumplimientos','','','','','','','']]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Evolución mensual')] }),
+        docxTable(['Mes','Estado del local','Presentación del personal','Vehículo'], data.trendRows.length ? data.trendRows.map(r => [r.label,r.local===null?'—':`${(r.local*100).toFixed(1)}%`,r.personnel===null?'—':`${(r.personnel*100).toFixed(1)}%`,r.vehicle===null?'—':`${(r.vehicle*100).toFixed(1)}%`]) : [['Sin datos','','','']]),
+        new d.Paragraph({ heading:d.HeadingLevel.HEADING_1, children:[new d.TextRun('Evidencia cualitativa')] }),
+        docxTable(['Fecha','Tipo','Identificación','Ítem','Crítica','Observación'], data.observations.length ? data.observations.map(o => [fmtDate(o.date),auditTypeLabel(o.type),o.identity,o.item,o.critical?'Sí':'No',o.observation]) : [['Sin observaciones','','','','','']]),
+        new d.Paragraph({ children:[new d.TextRun({ text:'Criterio: los porcentajes excluyen respuestas N/A y preguntas sin responder. El ranking individual utiliza únicamente auditorías de Presentación del personal.', italics:true })] })
+      ];
+      const doc = new d.Document({ sections:[{ properties:{}, children }] });
+      const blob = await d.Packer.toBlob(doc);
+      downloadBlob(blob, analysisFilename('docx', data.range));
+      toast('Análisis descargado en Word.', 'success');
+    } catch (e) { console.error(e); toast(e?.message || 'No se pudo generar el Word de análisis.', 'danger'); }
+    finally { loading(false); }
   }
 
   // ============================================================
@@ -2081,6 +2459,9 @@
     toggleHistorySelection,
     downloadPdf,
     downloadAuditsPdf,
+    downloadAnalysisPdf,
+    downloadAnalysisXlsx,
+    downloadAnalysisDocx,
     goHistory: () => setView('history'),
     editSection,
     addItem: (sectionId) => openItemModal(sectionId),

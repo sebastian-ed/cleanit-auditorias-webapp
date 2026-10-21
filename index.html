@@ -155,7 +155,12 @@
               <h1 class="h3 mb-1">Análisis de auditorías</h1>
               <p class="text-secondary mb-0">Patrones de cumplimiento, recurrencias y desempeño para tomar decisiones operativas.</p>
             </div>
-            <button id="analysisRefreshBtn" class="btn btn-outline-dark">Actualizar datos</button>
+            <div class="d-flex flex-wrap gap-2">
+              <button id="analysisPdfBtn" class="btn btn-dark">Descargar PDF</button>
+              <button id="analysisXlsxBtn" class="btn btn-outline-dark">Descargar Excel</button>
+              <button id="analysisDocxBtn" class="btn btn-outline-dark">Descargar Word</button>
+              <button id="analysisRefreshBtn" class="btn btn-outline-secondary">Actualizar datos</button>
+            </div>
           </div>
 
           <div class="panel-card p-3 mb-4">
@@ -527,6 +532,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@9.11.0/build/index.umd.js"></script>
   <script src="assets/js/config.js"></script>
   <script src="assets/js/app.js"></script>
 </body>

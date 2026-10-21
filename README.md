@@ -215,3 +215,13 @@ La sección **Análisis** agrega lectura cuantitativa y cualitativa sin requerir
 `N/A` y preguntas sin responder se excluyen de las tasas de cumplimiento. Las fallas de una auditoría de vehículo se consideran fallas del proceso/equipo y no se atribuyen automáticamente a una persona, ya que un vehículo puede ser trabajado por varios operarios.
 
 No requiere ejecutar una migración nueva en Supabase si la instalación ya está en V5/V6.
+## V8 · Exportación de Análisis
+
+La sección **Análisis** permite descargar el período actualmente seleccionado en tres formatos:
+
+- **PDF:** informe ejecutivo con KPIs, lectura cualitativa, ranking de operarios, incumplimientos, tendencia y observaciones.
+- **Excel (.xlsx):** libro analítico con hojas `Resumen`, `Operarios`, `Detalle operarios`, `Incumplimientos`, `Tendencia`, `Observaciones` y `Auditorías`.
+- **Word (.docx):** informe editable con resumen ejecutivo, hallazgos y tablas principales.
+
+Las exportaciones respetan el filtro temporal activo de la sección Análisis. Esta versión no requiere migraciones nuevas de Supabase.
+
