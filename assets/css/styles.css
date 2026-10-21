@@ -123,3 +123,20 @@ button, input, select, textarea { box-shadow: none !important; }
 .staff-check .form-check-input { margin: 0; }
 .staff-empty { width: 100%; color: var(--ci-muted); font-size: .85rem; padding: 5px; }
 .badge-soft-info { background: #e8f1fb; color: #245a8d; }
+
+
+/* V7 · Análisis gerencial */
+.analysis-insights { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.analysis-insight { border: 1px solid var(--ci-border); border-left-width: 4px; border-radius: 10px; padding: 14px 15px; background: #fff; }
+.analysis-insight-title { font-weight: 800; font-size: .92rem; }
+.analysis-insight-text { color: var(--ci-muted); font-size: .86rem; line-height: 1.45; margin-top: 4px; }
+.analysis-insight-success { border-left-color: #198754; background: #fbfefc; }
+.analysis-insight-warning { border-left-color: #d49a1e; background: #fffdf7; }
+.analysis-insight-danger { border-left-color: #b42318; background: #fffafa; }
+.analysis-insight-neutral { border-left-color: #6b7280; }
+.analysis-worst-row > * { background: #fffafa !important; }
+.analysis-note { border: 1px solid var(--ci-border); border-radius: 9px; padding: 10px 11px; margin-bottom: 8px; background: #fafafa; }
+.analysis-observations { max-height: 560px; overflow: auto; }
+.analysis-observation-entry { padding: 14px 16px; border-bottom: 1px solid #eef0f2; }
+.analysis-observation-entry:last-child { border-bottom: 0; }
+@media (max-width: 767.98px) { .analysis-insights { grid-template-columns: 1fr; } }

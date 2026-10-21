@@ -52,6 +52,7 @@
 
       <nav class="nav flex-column gap-1 mt-4" id="mainNav">
         <button class="nav-link active" data-view="dashboard">Panel</button>
+        <button class="nav-link" data-view="analysis">Análisis</button>
         <button class="nav-link" data-view="newAudit">Nueva auditoría</button>
         <button class="nav-link" data-view="history">Historial</button>
         <button class="nav-link admin-only d-none" data-view="checklistAdmin">Checklist</button>
@@ -143,6 +144,114 @@
                 <tbody id="recentAuditsBody"></tbody>
               </table>
             </div>
+          </div>
+        </section>
+
+
+        <!-- ANALYSIS -->
+        <section id="view-analysis" class="app-view d-none">
+          <div class="d-flex flex-wrap gap-3 justify-content-between align-items-start mb-4">
+            <div>
+              <h1 class="h3 mb-1">Análisis de auditorías</h1>
+              <p class="text-secondary mb-0">Patrones de cumplimiento, recurrencias y desempeño para tomar decisiones operativas.</p>
+            </div>
+            <button id="analysisRefreshBtn" class="btn btn-outline-dark">Actualizar datos</button>
+          </div>
+
+          <div class="panel-card p-3 mb-4">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label for="analysisPeriod" class="form-label small">Período</label>
+                <select id="analysisPeriod" class="form-select">
+                  <option value="30">Últimos 30 días</option>
+                  <option value="90" selected>Últimos 90 días</option>
+                  <option value="180">Últimos 180 días</option>
+                  <option value="month">Mes actual</option>
+                  <option value="all">Todo el historial</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </div>
+              <div id="analysisCustomFromWrap" class="col-md-3 d-none"><label class="form-label small">Desde</label><input id="analysisFrom" type="date" class="form-control"></div>
+              <div id="analysisCustomToWrap" class="col-md-3 d-none"><label class="form-label small">Hasta</label><input id="analysisTo" type="date" class="form-control"></div>
+              <div class="col-md-3"><div class="small text-secondary" id="analysisScopeText">Se analizan auditorías finalizadas y respuestas efectivamente evaluadas.</div></div>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Auditorías analizadas</div><div id="analysisKpiAudits" class="metric-value">—</div><div class="metric-foot">Finalizadas en el período</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Cumplimiento de ítems</div><div id="analysisKpiCompliance" class="metric-value">—</div><div class="metric-foot">Cumple / ítems evaluados</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Incumplimientos</div><div id="analysisKpiFailures" class="metric-value">—</div><div class="metric-foot">No cumple acumulados</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Fallas críticas</div><div id="analysisKpiCritical" class="metric-value">—</div><div class="metric-foot">Incumplimientos críticos</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Recurrencias</div><div id="analysisKpiRecurring" class="metric-value">—</div><div class="metric-foot">Ítems fallados 2+ veces</div></div></div>
+            <div class="col-6 col-xl"><div class="metric-card"><div class="metric-label">Incompletas</div><div id="analysisKpiIncomplete" class="metric-value">—</div><div class="metric-foot">Finalizadas con pendientes</div></div></div>
+          </div>
+
+          <div class="panel-card mb-4">
+            <div class="panel-card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+              <div><h3 class="h6 mb-1">Lectura ejecutiva</h3><div class="small text-secondary">Hallazgos automáticos basados en frecuencia, criticidad, tendencia y tamaño de muestra.</div></div>
+              <span class="badge badge-soft-neutral">Cualitativo + cuantitativo</span>
+            </div>
+            <div id="analysisInsights" class="analysis-insights p-3"></div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-xl-7">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Evolución del cumplimiento</h3><div class="small text-secondary">Por mes y tipo de auditoría. N/A y sin responder no participan.</div></div>
+                <div class="chart-wrap chart-wrap-lg"><canvas id="analysisTrendChart"></canvas></div>
+              </div>
+            </div>
+            <div class="col-xl-5">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Desempeño de operarios</h3><div class="small text-secondary">Basado exclusivamente en auditorías individuales de Presentación del personal.</div></div>
+                <div class="chart-wrap chart-wrap-lg"><canvas id="analysisStaffChart"></canvas></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-card mb-4">
+            <div class="panel-card-header d-flex flex-wrap justify-content-between align-items-end gap-3">
+              <div><h3 class="h6 mb-1">Ranking de operarios</h3><div class="small text-secondary">La frecuencia de incumplimiento se calcula sobre ítems respondidos como Cumple o No cumple.</div></div>
+              <div style="min-width:260px"><label for="analysisStaffDetail" class="form-label small mb-1">Ver detalle de un operario</label><select id="analysisStaffDetail" class="form-select form-select-sm"><option value="">Seleccionar…</option></select></div>
+            </div>
+            <div class="table-responsive">
+              <table class="table align-middle mb-0"><thead><tr><th>Operario</th><th>Auditorías</th><th>Evaluaciones</th><th>Cumplimiento</th><th>No cumple</th><th>Críticas</th><th>Principal incumplimiento</th><th>Frecuencia</th></tr></thead><tbody id="analysisStaffBody"></tbody></table>
+            </div>
+            <div id="analysisStaffDetailPanel" class="border-top d-none"></div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-xl-6">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Estado del local · incumplimientos recurrentes</h3><div class="small text-secondary">Secciones 1 a 3. Ordenado por impacto y frecuencia.</div></div>
+                <div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Ítem</th><th>Fallas</th><th>Evaluado</th><th>Frecuencia</th><th>Última</th></tr></thead><tbody id="analysisLocalFailuresBody"></tbody></table></div>
+              </div>
+            </div>
+            <div class="col-xl-6">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Vehículos · incumplimientos recurrentes</h3><div class="small text-secondary">Secciones 5 a 12. Mide el proceso, no atribuye una falla a un operario individual.</div></div>
+                <div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Ítem</th><th>Fallas</th><th>Evaluado</th><th>Frecuencia</th><th>Última</th></tr></thead><tbody id="analysisVehicleFailuresBody"></tbody></table></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-xl-7">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Top de incumplimientos generales</h3><div class="small text-secondary">Permite distinguir fallas aisladas de problemas que se repiten.</div></div>
+                <div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Tipo</th><th>Ítem</th><th>Fallas</th><th>Evaluado</th><th>Frecuencia</th><th>Criticidad</th></tr></thead><tbody id="analysisGeneralFailuresBody"></tbody></table></div>
+              </div>
+            </div>
+            <div class="col-xl-5">
+              <div class="panel-card h-100">
+                <div class="panel-card-header"><h3 class="h6 mb-1">Evidencia cualitativa reciente</h3><div class="small text-secondary">Observaciones escritas en respuestas marcadas como No cumple.</div></div>
+                <div id="analysisObservations" class="analysis-observations"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="alert alert-light border small text-secondary">
+            <strong>Criterio de lectura:</strong> las métricas de cumplimiento excluyen respuestas N/A y preguntas sin responder. El ranking individual se basa solo en auditorías de <em>Presentación del personal</em>; las auditorías de vehículo pueden tener varios participantes y por eso sus fallas se muestran como desempeño del proceso/equipo, no como desempeño individual.
           </div>
         </section>
 

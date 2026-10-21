@@ -197,3 +197,21 @@ Desde **Historial** se pueden generar informes PDF en tres niveles:
 
 Cuando se exportan varias auditorías, cada auditoría comienza en una página nueva y conserva su informe completo: tipo, identificación, responsables, puntaje, cobertura, estado, checklist, observaciones y condición de auditoría incompleta o borrador. No requiere cambios de base de datos ni una nueva migración SQL.
 
+
+
+## V7 · Análisis gerencial
+
+La sección **Análisis** agrega lectura cuantitativa y cualitativa sin requerir cambios de base de datos:
+
+- ranking de operarios a partir de auditorías individuales de Presentación del personal;
+- tasa de cumplimiento e incumplimiento por operario;
+- detalle de qué ítems incumple cada operario y con qué frecuencia;
+- fallas recurrentes del Estado del local y del proceso de Vehículo;
+- criticidad, recurrencia y fecha del último incumplimiento;
+- evolución mensual del cumplimiento por tipo de auditoría;
+- observaciones cualitativas recientes asociadas a respuestas `No cumple`;
+- hallazgos ejecutivos automáticos sobre desempeño, recurrencias, calidad del registro y tendencia reciente.
+
+`N/A` y preguntas sin responder se excluyen de las tasas de cumplimiento. Las fallas de una auditoría de vehículo se consideran fallas del proceso/equipo y no se atribuyen automáticamente a una persona, ya que un vehículo puede ser trabajado por varios operarios.
+
+No requiere ejecutar una migración nueva en Supabase si la instalación ya está en V5/V6.

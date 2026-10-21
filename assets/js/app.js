@@ -21,8 +21,11 @@
     history: [],
     activityLog: [],
     dashboardAudits: [],
+    analysisAudits: [],
+    analysisResponses: [],
+    analysisLoaded: false,
     staffMembers: [],
-    charts: { classification: null, sections: null },
+    charts: { classification: null, sections: null, analysisTrend: null, analysisStaff: null },
     modals: {}
   };
 
@@ -140,6 +143,7 @@
 
     const titles = {
       dashboard: ['Panel', 'Resumen de desempeño de auditorías.'],
+      analysis: ['Análisis', 'Patrones, recurrencias y desempeño operativo.'],
       newAudit: ['Nueva auditoría', 'Registro digital y guardado automático.'],
       history: ['Historial', 'Trazabilidad y consulta de resultados.'],
       checklistAdmin: ['Checklist', 'Administración de secciones e ítems.'],
@@ -153,6 +157,7 @@
 
     if (!load) return;
     if (name === 'dashboard') loadDashboard();
+    if (name === 'analysis') loadAnalysis();
     if (name === 'history') loadHistory();
     if (name === 'checklistAdmin') loadChecklistAdmin();
     if (name === 'staffAdmin') loadStaffAdmin();
@@ -243,6 +248,16 @@
     el('deleteSelectedAuditsBtn').addEventListener('click', () => openDeleteAuditsModal([...state.historySelected]));
     el('downloadSelectedAuditsBtn').addEventListener('click', () => downloadAuditsPdf([...state.historySelected], 'selected'));
     el('downloadAllAuditsBtn').addEventListener('click', () => downloadAuditsPdf(state.history.map(a => a.id), 'all'));
+
+    el('analysisPeriod').addEventListener('change', () => {
+      toggleAnalysisCustomDates();
+      renderAnalysis();
+    });
+    el('analysisFrom').addEventListener('change', renderAnalysis);
+    el('analysisTo').addEventListener('change', renderAnalysis);
+    el('analysisRefreshBtn').addEventListener('click', () => loadAnalysis(true));
+    el('analysisStaffDetail').addEventListener('change', () => renderAnalysisStaffDetail(el('analysisStaffDetail').value));
+
     el('dashboardTypeFilter').addEventListener('change', () => {
       if (el('dashboardTypeFilter').value !== 'personnel') el('dashboardStaffFilter').value = '';
       renderDashboard();
@@ -494,6 +509,399 @@
         plugins: { legend: { display: false } }
       }
     });
+  }
+
+
+  // ============================================================
+  // ANALYSIS
+  // ============================================================
+  function analysisDateRange() {
+    const mode = el('analysisPeriod')?.value || '90';
+    const now = new Date();
+    const toIso = d => {
+      const x = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+      return x.toISOString().slice(0, 10);
+    };
+    if (mode === 'all') return { from: '', to: '', label: 'Todo el historial' };
+    if (mode === 'custom') return { from: el('analysisFrom')?.value || '', to: el('analysisTo')?.value || '', label: 'Período personalizado' };
+    if (mode === 'month') {
+      const from = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { from: toIso(from), to: toIso(now), label: 'Mes actual' };
+    }
+    const days = Number(mode) || 90;
+    const from = new Date(now);
+    from.setDate(from.getDate() - (days - 1));
+    return { from: toIso(from), to: toIso(now), label: `Últimos ${days} días` };
+  }
+
+  function toggleAnalysisCustomDates() {
+    const custom = el('analysisPeriod')?.value === 'custom';
+    el('analysisCustomFromWrap')?.classList.toggle('d-none', !custom);
+    el('analysisCustomToWrap')?.classList.toggle('d-none', !custom);
+  }
+
+  async function fetchAnalysisAudits() {
+    const pageSize = 500;
+    let from = 0;
+    const rows = [];
+    while (true) {
+      const { data, error } = await client
+        .from('audits')
+        .select('*, auditor:profiles(full_name,email)')
+        .eq('status', 'completed')
+        .order('audit_date', { ascending: false })
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+      if (rows.length >= 10000) break;
+    }
+    return rows;
+  }
+
+  async function fetchAnalysisResponses(auditIds) {
+    if (!auditIds.length) return [];
+    const result = [];
+    const batchSize = 40;
+    const pageSize = 1000;
+    for (let i = 0; i < auditIds.length; i += batchSize) {
+      const ids = auditIds.slice(i, i + batchSize);
+      let from = 0;
+      while (true) {
+        const { data, error } = await client
+          .from('audit_responses')
+          .select('audit_id,section_order_snapshot,section_title_snapshot,item_code_snapshot,item_title_snapshot,is_critical_snapshot,answer,observation')
+          .in('audit_id', ids)
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        result.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+        from += pageSize;
+      }
+    }
+    return result;
+  }
+
+  async function loadAnalysis(force = false) {
+    toggleAnalysisCustomDates();
+    if (state.analysisLoaded && !force) {
+      renderAnalysis();
+      return;
+    }
+    loading(true);
+    try {
+      const audits = await fetchAnalysisAudits();
+      const responses = await fetchAnalysisResponses(audits.map(a => a.id));
+      state.analysisAudits = audits;
+      state.analysisResponses = responses;
+      state.analysisLoaded = true;
+      renderAnalysis();
+    } catch (e) {
+      console.error(e);
+      toast(e?.message || 'No se pudieron cargar los datos de análisis.', 'danger');
+    } finally { loading(false); }
+  }
+
+  function getAnalysisDataset() {
+    const range = analysisDateRange();
+    const audits = state.analysisAudits.filter(a => {
+      const date = String(a.audit_date || '').slice(0, 10);
+      if (range.from && date < range.from) return false;
+      if (range.to && date > range.to) return false;
+      return true;
+    });
+    const byId = new Map(audits.map(a => [a.id, a]));
+    const responses = state.analysisResponses.filter(r => byId.has(r.audit_id));
+    return { range, audits, responses, byId };
+  }
+
+  function evaluatedAnswer(answer) { return answer === 'complies' || answer === 'non_complies'; }
+  function rateText(n, d) { return d ? `${(n / d * 100).toFixed(1)}%` : '—'; }
+  function normalizeCode(v='') { return String(v || '').trim().toLowerCase(); }
+  function responseMetricKey(audit, r) {
+    const stable = normalizeCode(r.item_code_snapshot) || String(r.item_title_snapshot || '').trim().toLowerCase();
+    return `${audit.audit_type}|${r.section_order_snapshot || ''}|${stable}`;
+  }
+
+  function buildFailureMetrics(audits, responses) {
+    const byId = new Map(audits.map(a => [a.id, a]));
+    const map = new Map();
+    // Audits arrive newest first, so the first label kept is the most recent snapshot.
+    responses.forEach(r => {
+      const audit = byId.get(r.audit_id);
+      if (!audit || !evaluatedAnswer(r.answer)) return;
+      const key = responseMetricKey(audit, r);
+      const acc = map.get(key) || {
+        key, auditType: audit.audit_type, sectionOrder: Number(r.section_order_snapshot || 0),
+        section: r.section_title_snapshot || 'Sin sección', code: r.item_code_snapshot || '',
+        title: r.item_title_snapshot || 'Ítem', critical: !!r.is_critical_snapshot,
+        evaluated: 0, failures: 0, complies: 0, criticalFailures: 0, lastFailure: '', lastAuditId: ''
+      };
+      acc.evaluated += 1;
+      if (r.answer === 'non_complies') {
+        acc.failures += 1;
+        if (r.is_critical_snapshot) acc.criticalFailures += 1;
+        const date = String(audit.audit_date || '').slice(0, 10);
+        if (!acc.lastFailure || date > acc.lastFailure) { acc.lastFailure = date; acc.lastAuditId = audit.id; }
+      } else acc.complies += 1;
+      map.set(key, acc);
+    });
+    return [...map.values()].map(x => ({ ...x, failureRate: x.evaluated ? x.failures / x.evaluated * 100 : 0 }))
+      .sort((a,b) => b.criticalFailures - a.criticalFailures || b.failures - a.failures || b.failureRate - a.failureRate || b.evaluated - a.evaluated);
+  }
+
+  function buildStaffMetrics(audits, responses) {
+    const personnel = audits.filter(a => a.audit_type === 'personnel' && a.staff_member_name_snapshot);
+    const personnelIds = new Set(personnel.map(a => a.id));
+    const auditById = new Map(personnel.map(a => [a.id, a]));
+    const byStaff = new Map();
+    personnel.forEach(a => {
+      const name = a.staff_member_name_snapshot || 'Sin identificar';
+      const key = a.staff_member_id || name.toLowerCase();
+      const acc = byStaff.get(key) || { key: String(key), name, auditIds: new Set(), evaluated: 0, complies: 0, failures: 0, critical: 0, itemMap: new Map(), observations: [] };
+      acc.auditIds.add(a.id);
+      byStaff.set(key, acc);
+    });
+    responses.forEach(r => {
+      if (!personnelIds.has(r.audit_id) || !evaluatedAnswer(r.answer)) return;
+      const audit = auditById.get(r.audit_id);
+      if (!audit) return;
+      const key = audit.staff_member_id || String(audit.staff_member_name_snapshot || '').toLowerCase();
+      const acc = byStaff.get(key);
+      if (!acc) return;
+      acc.evaluated += 1;
+      if (r.answer === 'complies') acc.complies += 1;
+      if (r.answer === 'non_complies') {
+        acc.failures += 1;
+        if (r.is_critical_snapshot) acc.critical += 1;
+        const ikey = normalizeCode(r.item_code_snapshot) || String(r.item_title_snapshot || '').trim().toLowerCase();
+        const item = acc.itemMap.get(ikey) || { code: r.item_code_snapshot || '', title: r.item_title_snapshot || 'Ítem', evaluated: 0, failures: 0, critical: !!r.is_critical_snapshot, lastFailure: '' };
+        item.failures += 1;
+        item.lastFailure = !item.lastFailure || audit.audit_date > item.lastFailure ? audit.audit_date : item.lastFailure;
+        acc.itemMap.set(ikey, item);
+        if (r.observation) acc.observations.push({ date: audit.audit_date, title: r.item_title_snapshot, observation: r.observation });
+      }
+    });
+    // Add evaluated denominators per item for each staff.
+    responses.forEach(r => {
+      if (!personnelIds.has(r.audit_id) || !evaluatedAnswer(r.answer)) return;
+      const audit = auditById.get(r.audit_id);
+      if (!audit) return;
+      const key = audit.staff_member_id || String(audit.staff_member_name_snapshot || '').toLowerCase();
+      const acc = byStaff.get(key);
+      if (!acc) return;
+      const ikey = normalizeCode(r.item_code_snapshot) || String(r.item_title_snapshot || '').trim().toLowerCase();
+      const item = acc.itemMap.get(ikey);
+      if (item) item.evaluated += 1;
+    });
+    return [...byStaff.values()].map(s => {
+      const items = [...s.itemMap.values()].map(i => ({ ...i, failureRate: i.evaluated ? i.failures / i.evaluated * 100 : 0 }))
+        .sort((a,b) => b.failures - a.failures || b.failureRate - a.failureRate);
+      return {
+        ...s, audits: s.auditIds.size, compliance: s.evaluated ? s.complies / s.evaluated * 100 : null,
+        failureRate: s.evaluated ? s.failures / s.evaluated * 100 : null,
+        items, topFailure: items[0] || null,
+        observations: s.observations.sort((a,b) => String(b.date).localeCompare(String(a.date)))
+      };
+    }).sort((a,b) => {
+      if (a.compliance === null) return 1;
+      if (b.compliance === null) return -1;
+      return a.compliance - b.compliance || b.failures - a.failures || b.audits - a.audits;
+    });
+  }
+
+  function analysisPriorityBadge(metric) {
+    if (metric.criticalFailures > 0 || (metric.failures >= 2 && metric.failureRate >= 30)) return '<span class="badge badge-soft-danger">Alta</span>';
+    if (metric.failures >= 2 || metric.failureRate >= 15) return '<span class="badge badge-soft-warning">Media</span>';
+    return '<span class="badge badge-soft-neutral">Baja</span>';
+  }
+
+  function renderAnalysis() {
+    if (!state.analysisLoaded) return;
+    const { range, audits, responses, byId } = getAnalysisDataset();
+    const evaluated = responses.filter(r => evaluatedAnswer(r.answer));
+    const complies = evaluated.filter(r => r.answer === 'complies').length;
+    const failures = evaluated.filter(r => r.answer === 'non_complies').length;
+    const critical = evaluated.filter(r => r.answer === 'non_complies' && r.is_critical_snapshot).length;
+    const metrics = buildFailureMetrics(audits, responses);
+    const recurring = metrics.filter(m => m.failures >= 2).length;
+    const incomplete = audits.filter(a => !auditCoverage(a).complete).length;
+    const staff = buildStaffMetrics(audits, responses);
+
+    el('analysisKpiAudits').textContent = audits.length;
+    el('analysisKpiCompliance').textContent = evaluated.length ? rateText(complies, evaluated.length) : '—';
+    el('analysisKpiFailures').textContent = failures;
+    el('analysisKpiCritical').textContent = critical;
+    el('analysisKpiRecurring').textContent = recurring;
+    el('analysisKpiIncomplete').textContent = incomplete;
+    el('analysisScopeText').textContent = `${range.label} · ${audits.length} auditoría${audits.length === 1 ? '' : 's'} finalizada${audits.length === 1 ? '' : 's'} · ${evaluated.length} ítems evaluados.`;
+
+    renderAnalysisInsights(audits, responses, metrics, staff);
+    renderAnalysisTrend(audits, responses);
+    renderAnalysisStaff(staff);
+    renderFailureTable('analysisLocalFailuresBody', metrics.filter(m => m.auditType === 'local'), 10, false);
+    renderFailureTable('analysisVehicleFailuresBody', metrics.filter(m => m.auditType === 'vehicle'), 10, false);
+    renderGeneralFailureTable(metrics.filter(m => m.failures > 0).slice(0, 15));
+    renderAnalysisObservations(audits, responses, byId);
+  }
+
+  function renderAnalysisInsights(audits, responses, metrics, staff) {
+    const insights = [];
+    const evaluated = responses.filter(r => evaluatedAnswer(r.answer));
+    const failures = evaluated.filter(r => r.answer === 'non_complies');
+    const compliance = evaluated.length ? (evaluated.length - failures.length) / evaluated.length * 100 : null;
+    const incomplete = audits.filter(a => !auditCoverage(a).complete).length;
+    const topMetric = metrics.find(m => m.failures > 0);
+    const recurrentCritical = metrics.find(m => m.criticalFailures >= 2);
+    const staffWithSample = staff.filter(s => s.evaluated >= 4 && s.audits >= 2 && s.compliance !== null);
+    const worst = staffWithSample[0];
+    const best = [...staffWithSample].sort((a,b) => b.compliance - a.compliance || b.audits - a.audits)[0];
+
+    if (!audits.length) {
+      insights.push({ level:'neutral', title:'Sin muestra para el período', text:'No hay auditorías finalizadas dentro del rango seleccionado. Ampliá el período para obtener conclusiones.' });
+    } else {
+      if (compliance !== null) {
+        if (compliance >= 95) insights.push({ level:'success', title:'Cumplimiento general sólido', text:`El ${compliance.toFixed(1)}% de los ítems evaluados cumple el estándar (${evaluated.length} evaluaciones).` });
+        else if (compliance < 90) insights.push({ level:'danger', title:'Cumplimiento general por debajo del objetivo', text:`El cumplimiento es ${compliance.toFixed(1)}%. Conviene priorizar los incumplimientos recurrentes antes de aumentar la muestra.` });
+        else insights.push({ level:'warning', title:'Cumplimiento general con margen de mejora', text:`El cumplimiento es ${compliance.toFixed(1)}%. Está en una zona intermedia y las recurrencias muestran dónde intervenir primero.` });
+      }
+      if (worst) {
+        const top = worst.topFailure;
+        insights.push({ level: worst.compliance < 90 ? 'danger' : 'warning', title:`Operario con menor cumplimiento: ${worst.name}`, text:`Registra ${worst.compliance.toFixed(1)}% de cumplimiento en ${worst.audits} auditorías y ${worst.evaluated} evaluaciones.${top ? ` Su incumplimiento más frecuente es “${top.title}” (${top.failures}/${top.evaluated}, ${top.failureRate.toFixed(1)}%).` : ''}` });
+      } else if (staff.length) {
+        insights.push({ level:'neutral', title:'Muestra individual todavía limitada', text:'Hay auditorías de personal, pero todavía no alcanza una muestra mínima de 2 auditorías y 4 ítems evaluados por operario para ordenar desempeño con confianza.' });
+      }
+      if (best && (!worst || best.key !== worst.key)) insights.push({ level:'success', title:`Mejor desempeño individual: ${best.name}`, text:`Alcanza ${best.compliance.toFixed(1)}% de cumplimiento en ${best.audits} auditorías (${best.evaluated} evaluaciones). Puede usarse como referencia operativa si la muestra se sostiene.` });
+      if (recurrentCritical) insights.push({ level:'danger', title:'Falla crítica recurrente', text:`“${recurrentCritical.title}” acumuló ${recurrentCritical.criticalFailures} incumplimientos críticos sobre ${recurrentCritical.evaluated} evaluaciones. Requiere acción correctiva y seguimiento específico.` });
+      else if (topMetric && topMetric.failures >= 2) insights.push({ level:'warning', title:'Principal recurrencia detectada', text:`“${topMetric.title}” falló ${topMetric.failures} veces sobre ${topMetric.evaluated} evaluaciones (${topMetric.failureRate.toFixed(1)}%).` });
+      if (audits.length && incomplete / audits.length >= .15) insights.push({ level:'warning', title:'Calidad de registro a mejorar', text:`${incomplete} de ${audits.length} auditorías (${(incomplete / audits.length * 100).toFixed(1)}%) se finalizaron con preguntas pendientes. Esto reduce la comparabilidad del análisis.` });
+      else if (audits.length && incomplete === 0) insights.push({ level:'success', title:'Buena calidad de captura', text:'Todas las auditorías finalizadas del período tienen el checklist completo.' });
+      const trend = calculateRecentTrend(audits, responses);
+      if (trend && Math.abs(trend.delta) >= 5) insights.push({ level: trend.delta > 0 ? 'success' : 'danger', title: trend.delta > 0 ? 'Tendencia reciente favorable' : 'Deterioro reciente del cumplimiento', text:`Los últimos 30 días muestran ${trend.current.toFixed(1)}% frente a ${trend.previous.toFixed(1)}% en los 30 días anteriores (${trend.delta > 0 ? '+' : ''}${trend.delta.toFixed(1)} puntos).` });
+    }
+    const levelClass = { success:'analysis-insight-success', warning:'analysis-insight-warning', danger:'analysis-insight-danger', neutral:'analysis-insight-neutral' };
+    el('analysisInsights').innerHTML = insights.map(i => `<div class="analysis-insight ${levelClass[i.level] || levelClass.neutral}"><div class="analysis-insight-title">${esc(i.title)}</div><div class="analysis-insight-text">${esc(i.text)}</div></div>`).join('');
+  }
+
+  function calculateRecentTrend(audits, responses) {
+    if (!audits.length) return null;
+    const today = new Date();
+    const startCurrent = new Date(today); startCurrent.setDate(startCurrent.getDate() - 29);
+    const startPrevious = new Date(today); startPrevious.setDate(startPrevious.getDate() - 59);
+    const endPrevious = new Date(today); endPrevious.setDate(endPrevious.getDate() - 30);
+    const iso = d => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+    const currentIds = new Set(audits.filter(a => a.audit_date >= iso(startCurrent) && a.audit_date <= iso(today)).map(a => a.id));
+    const previousIds = new Set(audits.filter(a => a.audit_date >= iso(startPrevious) && a.audit_date <= iso(endPrevious)).map(a => a.id));
+    const calc = ids => {
+      const rows = responses.filter(r => ids.has(r.audit_id) && evaluatedAnswer(r.answer));
+      if (rows.length < 5) return null;
+      return rows.filter(r => r.answer === 'complies').length / rows.length * 100;
+    };
+    const current = calc(currentIds), previous = calc(previousIds);
+    if (current === null || previous === null) return null;
+    return { current, previous, delta: current - previous };
+  }
+
+  function renderAnalysisTrend(audits, responses) {
+    const auditById = new Map(audits.map(a => [a.id, a]));
+    const map = new Map();
+    responses.forEach(r => {
+      if (!evaluatedAnswer(r.answer)) return;
+      const a = auditById.get(r.audit_id); if (!a) return;
+      const month = String(a.audit_date || '').slice(0,7);
+      if (!month) return;
+      const key = `${month}|${a.audit_type}`;
+      const acc = map.get(key) || { month, type:a.audit_type, total:0, complies:0 };
+      acc.total++; if (r.answer === 'complies') acc.complies++;
+      map.set(key, acc);
+    });
+    const months = [...new Set([...map.values()].map(x => x.month))].sort();
+    const types = ['local','personnel','vehicle'];
+    const datasets = types.map(type => ({
+      label: auditTypeLabel(type),
+      data: months.map(month => {
+        const x = map.get(`${month}|${type}`);
+        return x?.total ? Number((x.complies / x.total * 100).toFixed(1)) : null;
+      }),
+      tension: .25,
+      spanGaps: true
+    })).filter(ds => ds.data.some(v => v !== null));
+    state.charts.analysisTrend?.destroy();
+    state.charts.analysisTrend = new Chart(el('analysisTrendChart'), {
+      type:'line', data:{ labels:months.map(m => { const [y,mo]=m.split('-'); return `${mo}/${y}`; }), datasets },
+      options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ min:0, max:100, ticks:{ callback:v=>`${v}%` } } }, plugins:{ legend:{ position:'bottom' } } }
+    });
+  }
+
+  function renderAnalysisStaff(staff) {
+    const select = el('analysisStaffDetail');
+    const keep = select.value;
+    select.innerHTML = '<option value="">Seleccionar…</option>' + staff.map(s => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join('');
+    if (staff.some(s => String(s.key) === String(keep))) select.value = keep;
+
+    const body = el('analysisStaffBody');
+    body.innerHTML = staff.length ? staff.map((s,idx) => `<tr class="${idx === 0 && s.compliance !== null ? 'analysis-worst-row' : ''}">
+      <td class="fw-semibold">${esc(s.name)}</td><td>${s.audits}</td><td>${s.evaluated}</td>
+      <td><strong>${s.compliance === null ? '—' : `${s.compliance.toFixed(1)}%`}</strong></td><td>${s.failures}</td><td>${s.critical}</td>
+      <td>${s.topFailure ? `${esc(s.topFailure.code ? `${s.topFailure.code} · ` : '')}${esc(s.topFailure.title)}` : '—'}</td>
+      <td>${s.topFailure ? `${s.topFailure.failures}/${s.topFailure.evaluated} (${s.topFailure.failureRate.toFixed(1)}%)` : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="8"><div class="empty-state">No hay auditorías individuales de personal en este período.</div></td></tr>';
+
+    const chartRows = staff.filter(s => s.compliance !== null).slice(0, 12).reverse();
+    state.charts.analysisStaff?.destroy();
+    state.charts.analysisStaff = new Chart(el('analysisStaffChart'), {
+      type:'bar', data:{ labels:chartRows.map(s => s.name), datasets:[{ label:'Cumplimiento %', data:chartRows.map(s => Number(s.compliance.toFixed(1))) }] },
+      options:{ responsive:true, maintainAspectRatio:false, indexAxis:'y', scales:{ x:{ min:0, max:100, ticks:{ callback:v=>`${v}%` } } }, plugins:{ legend:{ display:false } } }
+    });
+    renderAnalysisStaffDetail(select.value, staff);
+  }
+
+  function renderAnalysisStaffDetail(key, suppliedStaff = null) {
+    const panel = el('analysisStaffDetailPanel');
+    if (!key) { panel.classList.add('d-none'); panel.innerHTML=''; return; }
+    const dataset = getAnalysisDataset();
+    const staff = suppliedStaff || buildStaffMetrics(dataset.audits, dataset.responses);
+    const s = staff.find(x => String(x.key) === String(key));
+    if (!s) { panel.classList.add('d-none'); return; }
+    panel.classList.remove('d-none');
+    panel.innerHTML = `<div class="p-3 p-lg-4">
+      <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start mb-3"><div><h4 class="h6 mb-1">Detalle · ${esc(s.name)}</h4><div class="small text-secondary">${s.audits} auditorías · ${s.evaluated} evaluaciones · ${s.failures} incumplimientos</div></div><span class="badge ${s.compliance !== null && s.compliance >= 95 ? 'badge-soft-success' : s.compliance !== null && s.compliance >= 90 ? 'badge-soft-warning' : 'badge-soft-danger'}">${s.compliance === null ? 'Sin evaluación' : `${s.compliance.toFixed(1)}% cumplimiento`}</span></div>
+      <div class="row g-3">
+        <div class="col-xl-7"><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Incumplimiento</th><th>Fallas</th><th>Evaluado</th><th>Frecuencia</th><th>Última</th></tr></thead><tbody>${s.items.length ? s.items.map(i=>`<tr><td>${esc(i.code ? `${i.code} · ` : '')}${esc(i.title)}${i.critical ? ' <span class="critical-pill">Crítico</span>' : ''}</td><td>${i.failures}</td><td>${i.evaluated}</td><td><strong>${i.failureRate.toFixed(1)}%</strong></td><td>${fmtDate(i.lastFailure)}</td></tr>`).join('') : '<tr><td colspan="5" class="text-secondary">Sin incumplimientos registrados.</td></tr>'}</tbody></table></div></div>
+        <div class="col-xl-5"><div class="small text-uppercase fw-bold text-secondary mb-2">Observaciones recientes</div>${s.observations.length ? s.observations.slice(0,6).map(o=>`<div class="analysis-note"><div class="small fw-semibold">${fmtDate(o.date)} · ${esc(o.title)}</div><div class="small text-secondary mt-1">${esc(o.observation)}</div></div>`).join('') : '<div class="text-secondary small">No hay observaciones escritas asociadas a incumplimientos.</div>'}</div>
+      </div>
+    </div>`;
+  }
+
+  function renderFailureTable(bodyId, metrics, limit = 10, showType = false) {
+    const rows = metrics.filter(m => m.failures > 0).slice(0, limit);
+    el(bodyId).innerHTML = rows.length ? rows.map(m => `<tr>
+      ${showType ? `<td><span class="badge ${auditTypeBadgeClass(m.auditType)}">${esc(auditTypeLabel(m.auditType))}</span></td>` : ''}
+      <td><div class="fw-semibold">${esc(m.code ? `${m.code} · ` : '')}${esc(m.title)}</div><div class="small text-secondary">${esc(m.section.replace(/^\d+\.\s*/, ''))}</div></td>
+      <td><strong>${m.failures}</strong></td><td>${m.evaluated}</td><td><strong>${m.failureRate.toFixed(1)}%</strong></td><td>${fmtDate(m.lastFailure)}</td>
+    </tr>`).join('') : `<tr><td colspan="${showType ? 6 : 5}"><div class="empty-state">No hay incumplimientos registrados en este período.</div></td></tr>`;
+  }
+
+  function renderGeneralFailureTable(metrics) {
+    const body = el('analysisGeneralFailuresBody');
+    body.innerHTML = metrics.length ? metrics.map(m => `<tr>
+      <td><span class="badge ${auditTypeBadgeClass(m.auditType)}">${esc(auditTypeLabel(m.auditType))}</span></td>
+      <td><div class="fw-semibold">${esc(m.code ? `${m.code} · ` : '')}${esc(m.title)}</div><div class="small text-secondary">${esc(m.section.replace(/^\d+\.\s*/, ''))}</div></td>
+      <td><strong>${m.failures}</strong></td><td>${m.evaluated}</td><td><strong>${m.failureRate.toFixed(1)}%</strong></td><td>${analysisPriorityBadge(m)}</td>
+    </tr>`).join('') : '<tr><td colspan="6"><div class="empty-state">No hay incumplimientos registrados en este período.</div></td></tr>';
+  }
+
+  function renderAnalysisObservations(audits, responses, byId) {
+    const rows = responses.filter(r => r.answer === 'non_complies' && r.observation).map(r => {
+      const a = byId.get(r.audit_id);
+      return a ? { audit:a, response:r } : null;
+    }).filter(Boolean).sort((a,b) => String(b.audit.audit_date).localeCompare(String(a.audit.audit_date))).slice(0,12);
+    el('analysisObservations').innerHTML = rows.length ? rows.map(x => `<div class="analysis-observation-entry">
+      <div class="d-flex flex-wrap justify-content-between gap-2"><div class="fw-semibold small">${esc(x.response.item_title_snapshot)}</div><span class="badge ${auditTypeBadgeClass(x.audit.audit_type)}">${esc(auditTypeLabel(x.audit.audit_type))}</span></div>
+      <div class="small text-secondary mt-1">${fmtDate(x.audit.audit_date)} · ${esc(auditIdentity(x.audit))}</div>
+      <div class="small mt-2">${esc(x.response.observation)}</div>
+    </div>`).join('') : '<div class="empty-state">No hay observaciones escritas asociadas a incumplimientos en este período.</div>';
   }
 
   // ============================================================
@@ -836,6 +1244,7 @@
       if (error) throw error;
       state.activeAudit = null;
       state.activeResponses = [];
+      state.analysisLoaded = false;
       toast(calc.complete ? 'Auditoría finalizada y registrada.' : `Auditoría finalizada con ${calc.unanswered} ítem(s) pendiente(s).`, calc.complete ? 'success' : 'warning');
       await openAudit(data.id);
     } catch (e) {
@@ -926,6 +1335,7 @@
       state.activeAudit = null;
       state.activeResponses = [];
       state.editingCompleted = false;
+      state.analysisLoaded = false;
       toast(calc.complete ? 'Auditoría actualizada. El cambio quedó registrado.' : `Auditoría actualizada e identificada como incompleta (${calc.unanswered} pendiente(s)).`, calc.complete ? 'success' : 'warning');
       await openAudit(id);
     } catch (e) {
@@ -973,6 +1383,7 @@
       state.modals.deleteAudit.hide();
       ids.forEach(id => state.historySelected.delete(id));
       state.history = state.history.filter(a => !ids.includes(a.id));
+      state.analysisLoaded = false;
       toast(`${ids.length} auditoría(s) eliminada(s) definitivamente. La acción quedó registrada.`, 'success');
       if (state.currentView === 'auditDetail') setView('history');
       else if (state.currentView === 'history') await loadHistory();
