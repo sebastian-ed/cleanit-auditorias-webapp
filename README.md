@@ -186,3 +186,14 @@ cleanit-auditorias/
     ├── migration_v5_three_audit_types_staff.sql
     └── promote-admin.sql
 ```
+
+## Exportación PDF (V6)
+
+Desde **Historial** se pueden generar informes PDF en tres niveles:
+
+- **Individual:** botón `PDF` en cada auditoría.
+- **Seleccionadas:** marcar una o varias auditorías con los checkboxes y usar `PDF seleccionadas`.
+- **Todas:** `PDF todas (N)` genera un único archivo con todo el historial disponible, independientemente de los filtros actuales. Para exportar solamente un subconjunto filtrado, usá `Seleccionar todo` y luego `PDF seleccionadas`.
+
+Cuando se exportan varias auditorías, cada auditoría comienza en una página nueva y conserva su informe completo: tipo, identificación, responsables, puntaje, cobertura, estado, checklist, observaciones y condición de auditoría incompleta o borrador. No requiere cambios de base de datos ni una nueva migración SQL.
+

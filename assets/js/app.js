@@ -241,6 +241,8 @@
     el('selectAllHistoryBtn').addEventListener('click', () => selectAllVisibleHistory(true));
     el('clearHistorySelectionBtn').addEventListener('click', clearHistorySelection);
     el('deleteSelectedAuditsBtn').addEventListener('click', () => openDeleteAuditsModal([...state.historySelected]));
+    el('downloadSelectedAuditsBtn').addEventListener('click', () => downloadAuditsPdf([...state.historySelected], 'selected'));
+    el('downloadAllAuditsBtn').addEventListener('click', () => downloadAuditsPdf(state.history.map(a => a.id), 'all'));
     el('dashboardTypeFilter').addEventListener('change', () => {
       if (el('dashboardTypeFilter').value !== 'personnel') el('dashboardStaffFilter').value = '';
       renderDashboard();
@@ -1051,6 +1053,7 @@
           ${a.status === 'draft'
             ? `<button class="btn btn-sm btn-dark" onclick="CleanItApp.continueDraft('${a.id}')">Continuar</button>`
             : `<button class="btn btn-sm btn-outline-secondary" onclick="CleanItApp.openAudit('${a.id}')">Ver</button><button class="btn btn-sm btn-outline-dark" onclick="CleanItApp.editCompletedAudit('${a.id}')">Editar</button>`}
+          <button class="btn btn-sm btn-outline-dark" onclick="CleanItApp.downloadPdf('${a.id}')">PDF</button>
           <button class="btn btn-sm btn-outline-danger" onclick="CleanItApp.openDeleteAuditModal('${a.id}')">Eliminar</button>
         </div>
       </td>
@@ -1061,6 +1064,9 @@
     const headerCheck = el('historySelectAllCheckbox');
     headerCheck.checked = allVisibleSelected;
     headerCheck.indeterminate = someVisibleSelected && !allVisibleSelected;
+    const allPdfBtn = el('downloadAllAuditsBtn');
+    allPdfBtn.disabled = state.history.length === 0;
+    allPdfBtn.textContent = `PDF todas (${state.history.length})`;
     updateHistorySelectionBar();
   }
 
@@ -1085,6 +1091,8 @@
     const count = state.historySelected.size;
     el('selectedAuditCount').textContent = count;
     el('deleteSelectedAuditsBtn').disabled = count === 0;
+    el('downloadSelectedAuditsBtn').disabled = count === 0;
+    el('downloadSelectedAuditsBtn').textContent = count ? `PDF seleccionadas (${count})` : 'PDF seleccionadas';
     el('clearHistorySelectionBtn').disabled = count === 0;
   }
 
@@ -1158,7 +1166,7 @@
         <div class="d-flex flex-wrap gap-2 no-print">
           ${completed
             ? `<button class="btn btn-outline-dark" onclick="CleanItApp.editCompletedAudit('${audit.id}')">Editar auditoría</button><button class="btn btn-dark" onclick="CleanItApp.downloadPdf('${audit.id}')">Descargar informe PDF</button>`
-            : `<button class="btn btn-dark" onclick="CleanItApp.continueDraft('${audit.id}')">Continuar borrador</button>`}
+            : `<button class="btn btn-dark" onclick="CleanItApp.continueDraft('${audit.id}')">Continuar borrador</button><button class="btn btn-outline-dark" onclick="CleanItApp.downloadPdf('${audit.id}')">Descargar PDF</button>`}
           <button class="btn btn-outline-danger" onclick="CleanItApp.openDeleteAuditModal('${audit.id}')">Eliminar</button>
         </div>
       </div>
@@ -1207,26 +1215,95 @@
   const answerTextClass = a => a === 'complies' ? 'text-success' : a === 'non_complies' ? 'text-danger' : 'text-secondary';
 
   async function downloadPdf(id) {
-    loading(true);
-    try {
-      const { data: audit, error } = await client.from('audits').select('*, auditor:profiles(full_name,email)').eq('id', id).single();
-      if (error) throw error;
-      const { data: responses, error: responseError } = await client.from('audit_responses').select('*').eq('audit_id', id).order('section_order_snapshot').order('item_order_snapshot');
-      if (responseError) throw responseError;
-      makePdf(audit, responses);
-    } catch (e) { console.error(e); }
-    finally { loading(false); }
+    await downloadAuditsPdf([id], 'single');
   }
 
-  function makePdf(audit, responses) {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  async function fetchAuditsForPdf(ids) {
+    const uniqueIds = [...new Set((ids || []).filter(Boolean))];
+    if (!uniqueIds.length) return [];
+
+    const chunkSize = 80;
+    const audits = [];
+    const responses = [];
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const { data: auditRows, error: auditError } = await client
+        .from('audits')
+        .select('*, auditor:profiles(full_name,email)')
+        .in('id', chunk);
+      if (auditError) throw auditError;
+      audits.push(...(auditRows || []));
+
+      const { data: responseRows, error: responseError } = await client
+        .from('audit_responses')
+        .select('*')
+        .in('audit_id', chunk);
+      if (responseError) throw responseError;
+      responses.push(...(responseRows || []));
+    }
+
+    const auditMap = new Map(audits.map(a => [a.id, a]));
+    const responseMap = new Map();
+    responses.forEach(r => {
+      if (!responseMap.has(r.audit_id)) responseMap.set(r.audit_id, []);
+      responseMap.get(r.audit_id).push(r);
+    });
+
+    return uniqueIds
+      .map(id => auditMap.get(id))
+      .filter(Boolean)
+      .map(audit => ({
+        audit,
+        responses: (responseMap.get(audit.id) || []).sort((a,b) =>
+          Number(a.section_order_snapshot || 0) - Number(b.section_order_snapshot || 0) ||
+          Number(a.item_order_snapshot || 0) - Number(b.item_order_snapshot || 0)
+        )
+      }));
+  }
+
+  async function downloadAuditsPdf(ids, mode = 'selected') {
+    const uniqueIds = [...new Set((ids || []).filter(Boolean))];
+    if (!uniqueIds.length) {
+      toast('No hay auditorías para descargar.', 'warning');
+      return;
+    }
+
+    loading(true);
+    try {
+      const reports = await fetchAuditsForPdf(uniqueIds);
+      if (!reports.length) {
+        toast('No se encontraron auditorías accesibles para generar el PDF.', 'warning');
+        return;
+      }
+      makeAuditsPdf(reports, mode);
+      toast(`${reports.length} auditoría(s) incluidas en el PDF.`, 'success');
+    } catch (e) {
+      console.error(e);
+      toast(e?.message || 'No se pudo generar el PDF.', 'danger');
+    } finally {
+      loading(false);
+    }
+  }
+
+  function renderAuditIntoPdf(doc, audit, responses, reportIndex, totalReports, addNewPage) {
+    if (addNewPage) doc.addPage();
+
     const margin = 14;
     const typeLabel = auditTypeLabel(audit.audit_type);
     const coverage = auditCoverage(audit, responses);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text('CLEAN IT', margin, 16);
-    doc.setFontSize(13); doc.text(`Informe de Auditoría · ${typeLabel}`, margin, 24);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    const startPage = doc.getNumberOfPages();
+
+    doc.setTextColor(0);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(18);
+    doc.text('CLEAN IT', margin, 16);
+    doc.setFontSize(13);
+    doc.text(`Informe de Auditoría · ${typeLabel}`, margin, 24);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    if (totalReports > 1) doc.text(`Auditoría ${reportIndex + 1} de ${totalReports}`, 196, 16, { align: 'right' });
+    doc.setFontSize(9);
     doc.text(`Fecha: ${fmtDate(audit.audit_date)}    Auditor: ${audit.auditor?.full_name || audit.auditor?.email || '—'}`, margin, 31);
 
     let yMeta = 36;
@@ -1244,54 +1321,134 @@
 
     doc.autoTable({
       startY: yMeta + 1,
-      head: [['Puntaje', 'Resultado', 'Cobertura', 'Pendientes', 'Cumple', 'No cumple', 'Fallas críticas']],
-      body: [[pct(audit.score), audit.classification || '—', `${coverage.answered}/${coverage.total}`, coverage.unanswered, audit.compliant_items || 0, audit.noncompliant_items || 0, audit.critical_failures || 0]],
-      theme: 'grid', styles: { fontSize: 8 }, headStyles: { fillColor: [17, 24, 39] }
+      head: [['Puntaje', 'Resultado', 'Estado', 'Cobertura', 'Pendientes', 'Cumple', 'No cumple', 'Fallas críticas']],
+      body: [[
+        audit.status === 'completed' ? pct(audit.score) : '—',
+        audit.classification || (audit.status === 'draft' ? 'Borrador' : '—'),
+        statusLabel(audit.status),
+        `${coverage.answered}/${coverage.total}`,
+        coverage.unanswered,
+        audit.compliant_items || 0,
+        audit.noncompliant_items || 0,
+        audit.critical_failures || 0
+      ]],
+      theme: 'grid',
+      styles: { fontSize: 7.2, cellPadding: 1.7 },
+      headStyles: { fillColor: [17, 24, 39] },
+      margin: { left: margin, right: margin }
     });
 
+    let cursorY = doc.lastAutoTable.finalY + 5;
     if (audit.status === 'completed' && !coverage.complete) {
-      const warningY = doc.lastAutoTable.finalY + 5;
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
-      doc.text(`AUDITORÍA FINALIZADA INCOMPLETA: ${coverage.unanswered} ítem(s) sin responder.`, margin, warningY);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
-      doc.text('El puntaje se calcula únicamente sobre los ítems respondidos y aplicables.', margin, warningY + 4);
-      doc.lastAutoTable.finalY = warningY + 5;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.text(`AUDITORÍA FINALIZADA INCOMPLETA: ${coverage.unanswered} ítem(s) sin responder.`, margin, cursorY);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.text('El puntaje se calcula únicamente sobre los ítems respondidos y aplicables.', margin, cursorY + 4);
+      cursorY += 9;
+    } else if (audit.status === 'draft') {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.text(`BORRADOR: ${coverage.unanswered} ítem(s) pendiente(s) de respuesta.`, margin, cursorY);
+      doc.setFont('helvetica', 'normal');
+      cursorY += 6;
     }
 
-    groupResponses(responses).forEach(group => {
-      const startY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : yMeta + 10;
+    const groups = groupResponses(responses);
+    if (!groups.length) {
       doc.autoTable({
-        startY,
-        head: [[group.title, 'Criterio / evidencia', 'Resultado']],
-        body: group.rows.map(r => [
-          `${r.item_code_snapshot || ''} ${r.item_title_snapshot}${r.is_critical_snapshot ? ' [CRÍTICO]' : ''}`,
-          `${r.criterion_snapshot}${r.observation ? `\nObs.: ${r.observation}` : ''}`,
-          answerText(r.answer)
-        ]),
+        startY: cursorY,
+        head: [['Checklist']],
+        body: [['Esta auditoría no tiene respuestas registradas.']],
         theme: 'grid',
-        styles: { fontSize: 7.5, cellPadding: 2.2, overflow: 'linebreak' },
+        styles: { fontSize: 8 },
         headStyles: { fillColor: [17, 24, 39] },
-        columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 103 }, 2: { cellWidth: 27 } },
         margin: { left: margin, right: margin }
       });
-    });
+      cursorY = doc.lastAutoTable.finalY + 7;
+    } else {
+      groups.forEach(group => {
+        doc.autoTable({
+          startY: cursorY,
+          head: [[group.title, 'Criterio / evidencia', 'Resultado']],
+          body: group.rows.map(r => [
+            `${r.item_code_snapshot || ''} ${r.item_title_snapshot}${r.is_critical_snapshot ? ' [CRÍTICO]' : ''}`,
+            `${r.criterion_snapshot || ''}${r.observation ? `\nObs.: ${r.observation}` : ''}`,
+            answerText(r.answer)
+          ]),
+          theme: 'grid',
+          styles: { fontSize: 7.5, cellPadding: 2.2, overflow: 'linebreak' },
+          headStyles: { fillColor: [17, 24, 39] },
+          columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 103 }, 2: { cellWidth: 27 } },
+          margin: { left: margin, right: margin },
+          showHead: 'everyPage'
+        });
+        cursorY = doc.lastAutoTable.finalY + 7;
+      });
+    }
 
-    const notesY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 7 : yMeta + 20;
     doc.autoTable({
-      startY: notesY,
+      startY: cursorY,
       head: [['Observaciones generales']],
       body: [[audit.general_notes || 'Sin observaciones generales.']],
-      theme: 'grid', styles: { fontSize: 8 }, headStyles: { fillColor: [17, 24, 39] }, margin: { left: margin, right: margin }
+      theme: 'grid',
+      styles: { fontSize: 8, overflow: 'linebreak' },
+      headStyles: { fillColor: [17, 24, 39] },
+      margin: { left: margin, right: margin }
     });
 
-    const pages = doc.getNumberOfPages();
-    for (let i = 1; i <= pages; i++) {
-      doc.setPage(i); doc.setFontSize(7); doc.setTextColor(110);
-      doc.text(`Clean It · Auditoría ${audit.id.slice(0,8)} · Página ${i}/${pages}`, margin, 292);
+    const endPage = doc.getNumberOfPages();
+    return { audit, startPage, endPage, reportIndex, totalReports };
+  }
+
+  function makeAuditsPdf(reports, mode = 'selected') {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageRanges = [];
+
+    reports.forEach((report, index) => {
+      pageRanges.push(renderAuditIntoPdf(doc, report.audit, report.responses, index, reports.length, index > 0));
+    });
+
+    pageRanges.forEach(range => {
+      const pageCount = range.endPage - range.startPage + 1;
+      for (let page = range.startPage; page <= range.endPage; page++) {
+        doc.setPage(page);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(110);
+        const localPage = page - range.startPage + 1;
+        const identity = auditIdentity(range.audit);
+        doc.text(
+          `Clean It · ${identity} · Auditoría ${range.reportIndex + 1}/${range.totalReports} · Página ${localPage}/${pageCount}`,
+          14,
+          292
+        );
+      }
+    });
+
+    doc.setTextColor(0);
+    if (reports.length === 1) {
+      const audit = reports[0].audit;
+      const identity = audit.audit_type === 'vehicle'
+        ? (audit.vehicle_plate || 'SIN-PATENTE')
+        : audit.audit_type === 'personnel'
+          ? (audit.staff_member_name_snapshot || 'OPERARIO')
+          : audit.audit_type === 'local' ? 'LOCAL' : 'HISTORICA';
+      const safeIdentity = String(identity).replace(/[^a-z0-9-]/gi, '_');
+      doc.save(`Auditoria_CleanIt_${audit.audit_type || 'legacy'}_${fmtDate(audit.audit_date).replaceAll('/','-')}_${safeIdentity}.pdf`);
+      return;
     }
-    const identity = audit.audit_type === 'vehicle' ? (audit.vehicle_plate || 'SIN-PATENTE') : audit.audit_type === 'personnel' ? (audit.staff_member_name_snapshot || 'OPERARIO') : audit.audit_type === 'local' ? 'LOCAL' : 'HISTORICA';
-    const safeIdentity = identity.replace(/[^a-z0-9-]/gi, '_');
-    doc.save(`Auditoria_CleanIt_${audit.audit_type || 'legacy'}_${fmtDate(audit.audit_date).replaceAll('/','-')}_${safeIdentity}.pdf`);
+
+    const fromDate = reports.map(r => r.audit.audit_date).filter(Boolean).sort()[0] || todayISO();
+    const toDate = reports.map(r => r.audit.audit_date).filter(Boolean).sort().slice(-1)[0] || todayISO();
+    const suffix = mode === 'all' ? 'Todas' : 'Seleccionadas';
+    doc.save(`Auditorias_CleanIt_${suffix}_${reports.length}_${fromDate}_a_${toDate}.pdf`);
+  }
+
+  function makePdf(audit, responses) {
+    makeAuditsPdf([{ audit, responses }], 'single');
   }
 
   // ============================================================
@@ -1512,6 +1669,7 @@
     openDeleteAuditsModal,
     toggleHistorySelection,
     downloadPdf,
+    downloadAuditsPdf,
     goHistory: () => setView('history'),
     editSection,
     addItem: (sectionId) => openItemModal(sectionId),
